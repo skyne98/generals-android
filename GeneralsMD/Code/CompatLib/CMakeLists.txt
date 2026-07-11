@@ -74,8 +74,10 @@ else()
     if(NOT dxvk_SOURCE_DIR)
         message(FATAL_ERROR "DXVK not fetched! Ensure SAGE_USE_DX8=OFF and cmake/dx8.cmake was included")
     endif()
-    if(APPLE)
-        # macOS: DXVK built from git source -- Wine-style include/native layout
+    if(APPLE OR ANDROID)
+        # macOS/Android: DXVK built from git source -- Wine-style include/native layout
+        # GeneralsX-Android @build generals-android 11/07/2026 Android uses the fbraz3
+        # fork source (include/native), not the Linux pre-built tarball (include/dxvk).
         target_include_directories(d3d8lib INTERFACE
             ${dxvk_SOURCE_DIR}/include/native
             ${dxvk_SOURCE_DIR}/include/native/windows

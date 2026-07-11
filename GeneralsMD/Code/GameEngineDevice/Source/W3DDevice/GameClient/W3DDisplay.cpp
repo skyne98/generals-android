@@ -517,6 +517,11 @@ static bool SDL3_GetNativeDisplaySize(int& outW, int& outH, float& outDensity)
 	outDensity = mode->pixel_density > 0 ? mode->pixel_density : 1.0f;
 	outW = (int)(mode->w * outDensity);
 	outH = (int)(mode->h * outDensity);
+#if defined(__ANDROID__)
+	// Android reports the physical display in its natural (portrait) orientation
+	// during parts of Activity startup. The game is landscape-only.
+	if (outH > outW) std::swap(outW, outH);
+#endif
 	return true;
 }
 
@@ -530,6 +535,9 @@ static bool SDL3_GetWindowSizeInPixels(int& outW, int& outH, float& outDensity)
 	if (physW <= 0 || physH <= 0) return false;
 	outW = physW;
 	outH = physH;
+#if defined(__ANDROID__)
+	if (outH > outW) std::swap(outW, outH);
+#endif
 	outDensity = (logW > 0) ? (float)physW / (float)logW : 1.0f;
 	return true;
 }
@@ -558,6 +566,18 @@ static void SDL3_ApplyWindowModeForRenderConfig(Bool windowed, Int renderWidth, 
 {
 	extern SDL_Window* TheSDL3Window;
 	if (!TheSDL3Window) return;
+
+#if defined(__ANDROID__)
+	// Android has no exclusive fullscreen display modes. SDLActivity already owns
+	// a fullscreen SurfaceView; toggling fullscreen off/on destroys or reconfigures
+	// its ANativeWindow and can rotate the backbuffer to the natural portrait mode.
+	// Keep borderless fullscreen active and let DXVK scale to the surface extent.
+	if ((SDL_GetWindowFlags(TheSDL3Window) & SDL_WINDOW_FULLSCREEN) == 0) {
+		if (!SDL_SetWindowFullscreen(TheSDL3Window, true))
+			fprintf(stderr, "WARNING: SDL_SetWindowFullscreen(Android) failed: %s\n", SDL_GetError());
+	}
+	return;
+#endif
 
 	if (!windowed) {
 		if (!SDL_SetWindowFullscreen(TheSDL3Window, false)) {
@@ -598,12 +618,28 @@ static bool s_filteredDirty = true;
 static void buildFilteredResolutions()
 {
 	s_filteredResolutions.clear();
-	const RenderDeviceDescClass &devDesc = WW3D::Get_Render_Device_Desc(0);
-	const DynamicVectorClass<ResolutionDescClass> &resolutions = devDesc.Enumerate_Resolutions();
 
 	int nativeW = 0, nativeH = 0;
 	float density = 1.0f;
 	DX8Wrapper::GetNativeDisplaySize(nativeW, nativeH, density);
+
+#if defined(__ANDROID__)
+	// The transient DXVK adapter descriptions used during device probing are no
+	// longer available when the Options menu opens. Android has no exclusive
+	// display modes anyway, so expose stable render-scale choices bounded by the
+	// landscape surface size instead of dereferencing a stale device descriptor.
+	static constexpr FilteredRes androidModes[] = {
+		{ 800, 600, 32 }, { 960, 540, 32 }, { 1280, 720, 32 },
+		{ 1600, 900, 32 }, { 1920, 1080, 32 },
+	};
+	for (const FilteredRes &mode : androidModes) {
+		if ((nativeW <= 0 || mode.w <= nativeW) &&
+		    (nativeH <= 0 || mode.h <= nativeH))
+			s_filteredResolutions.push_back(mode);
+	}
+#else
+	const RenderDeviceDescClass &devDesc = WW3D::Get_Render_Device_Desc(0);
+	const DynamicVectorClass<ResolutionDescClass> &resolutions = devDesc.Enumerate_Resolutions();
 
 	for (int i = 0; i < resolutions.Count(); i++) {
 		if (!isResolutionSupported(resolutions[i])) continue;
@@ -621,6 +657,7 @@ static void buildFilteredResolutions()
 		}
 		if (!duplicate) s_filteredResolutions.push_back({w, h, bits});
 	}
+#endif
 	s_filteredDirty = false;
 }
 

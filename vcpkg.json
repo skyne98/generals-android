@@ -11,7 +11,7 @@
       },
       {
         "name": "fontconfig",
-        "platform": "!windows & !ios"
+        "platform": "!windows & !ios & !android"
       },
       {
         "name": "openal-soft",
@@ -20,12 +20,12 @@
       },
       {
         "name": "curl",
-        "platform": "!windows",
+        "platform": "!windows & !android",
         "features": ["ssl"]
       },
       {
         "name": "ffmpeg",
-        "platform": "ios",
+        "platform": "ios, android",
         "features": ["avcodec", "avformat", "swscale", "swresample"]
       }
     ],

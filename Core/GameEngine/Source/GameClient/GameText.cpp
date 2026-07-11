@@ -1398,6 +1398,14 @@ UnicodeString GameTextManager::fetch( const Char *label, Bool *exists )
 
 	if( lookUp == nullptr )
 	{
+		// GeneralsX adds this menu entry, but retail Zero Hour language CSFs do
+		// not contain its key. Keep the UI usable with an English fallback.
+		if (strcmp(label, "GUI:CustomMission") == 0)
+		{
+			if (exists)
+				*exists = TRUE;
+			return UnicodeString(L"CUSTOM MISSION");
+		}
 
 		// string not found
 		if( exists )

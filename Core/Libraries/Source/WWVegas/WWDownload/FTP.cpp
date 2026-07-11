@@ -30,7 +30,11 @@
 // Platform headers with socket_compat.h providing Winsock → POSIX mapping
 #include <stdio.h>
 #include <sys/types.h>
+// GeneralsX-Android @bugfix generals-android 11/07/2026 Bionic dropped sys/timeb.h
+// (deprecated POSIX); this include is vestigial (no ftime/_timeb usage in FTP.cpp).
+#if !defined(__ANDROID__)
 #include <sys/timeb.h>
+#endif
 #include <stdlib.h>
 #ifdef _WIN32
 #include <process.h>

@@ -452,8 +452,12 @@ static void remapTexture16Bit(Int dx, Int dy, Int pitch, SurfaceClass::SurfaceDe
 	}
 }
 
-//Use hue shift instead of alpha blend to apply house color to textures
+// Use hue shift instead of alpha blend to apply house color to textures.
+// The legacy HSV conversion is not reliable for A4R4G4B4 pixels on ARM64;
+// Android uses the equivalent alpha-blend path below instead.
+#if !defined(__ANDROID__)
 #define DO_HUE_SHIFT
+#endif
 
 //---------------------------------------------------------------------
 //Input texture is assumed to be in ARGB 4444 format.
@@ -660,23 +664,47 @@ TextureClass * W3DAssetManager::Recolor_Texture_One_Time(TextureClass *texture, 
 		TextureLoader::Request_Foreground_Loading(texture);
 
 	SurfaceClass::SurfaceDescription desc;
-	SurfaceClass *newsurf, *oldsurf;
+	SurfaceClass *newsurf, *oldsurf = nullptr;
 	texture->Get_Level_Description(desc);
+
+#if defined(__ANDROID__)
+	// House-colour remapping requires lockable pixels. ASTC blocks cannot be
+	// modified in place, so recreate this generated variant as A4R4G4B4 from
+	// the original TGA while leaving the shared source texture compressed.
+	if (desc.Format == WW3D_FORMAT_ASTC_6X6)
+		desc.Format = WW3D_FORMAT_A4R4G4B4;
+#endif
 
 	Int psize;
 	psize=Get_Bytes_Per_Pixel(desc.Format);
 	DEBUG_ASSERTCRASH( psize == 2 || psize == 4, ("Can't Recolor Texture %s", name) );
 
+#if defined(__ANDROID__)
+	// Use the populated decoder surface itself. Creating a second DEFAULT-pool
+	// surface and calling LockRect/Copy on it can leave its backing image zeroed
+	// in DXVK; the subsequent recolor then changes only team-colour pixels,
+	// producing black bodies with coloured accents.
+	IDirect3DSurface8 *decodedD3D = TextureLoader::Load_Surface_Immediate(
+		StringClass(name, true), desc.Format, false);
+	if (!decodedD3D) {
+		fprintf(stderr, "WARNING: Android team-colour TGA reload failed for '%s'; keeping original texture\n", name);
+		texture->Add_Ref();
+		return texture;
+	}
+	newsurf=NEW_REF(SurfaceClass,(decodedD3D));
+	decodedD3D->Release();
+#else
 	oldsurf=texture->Get_Surface_Level();
-
 	newsurf=NEW_REF(SurfaceClass,(desc.Width,desc.Height,desc.Format));
 	newsurf->Copy(0,0,0,0,desc.Width,desc.Height,oldsurf);
+#endif
 
 	if (*(name+3) == 'D' || *(name+3) == 'd')
 		Remap_Palette(newsurf,color, true, false );	//texture only contains a palette stored in top row.
 	else
 	if (*(name+3) == 'A' || *(name+3) == 'a')
 		Remap_Palette(newsurf,color, false, true );	//texture only contains a palette stored in top row.
+
 
 	TextureClass * newtex=NEW_REF(TextureClass,(newsurf,(MipCountType)texture->Get_Mip_Level_Count()));
 	newtex->Get_Filter().Set_Mag_Filter(texture->Get_Filter().Get_Mag_Filter());
@@ -1534,11 +1562,26 @@ TextureClass * W3DAssetManager::Recolor_Texture_One_Time(TextureClass *texture, 
 		TextureLoader::Request_High_Priority_Loading(texture, (TextureClass::MipCountType)texture->Get_Mip_Level_Count());
 
 	SurfaceClass::SurfaceDescription desc;
-	SurfaceClass *newsurf, *oldsurf, *smallsurf;
+	SurfaceClass *newsurf, *oldsurf = nullptr, *smallsurf;
 	texture->Get_Level_Description(desc);
 
-	// if texture is monochrome and no value shifting
-	// return nullptr
+#if defined(__ANDROID__)
+	// Neither DEFAULT-pool readback nor compressed surface locking is reliable
+	// through D3D8/DXVK on Android. Do not inspect the GPU mip for the optional
+	// monochrome shortcut; recreate every HSV-shifted variant from its source TGA.
+	if (desc.Format == WW3D_FORMAT_ASTC_6X6)
+		desc.Format = WW3D_FORMAT_A8R8G8B8;
+
+	IDirect3DSurface8 *decodedD3D = TextureLoader::Load_Surface_Immediate(
+		StringClass(name, true), desc.Format, false);
+	if (!decodedD3D) {
+		texture->Add_Ref();
+		return texture;
+	}
+	newsurf=NEW_REF(SurfaceClass,(decodedD3D));
+	decodedD3D->Release();
+#else
+	// if texture is monochrome and no value shifting, return nullptr
 	smallsurf=texture->Get_Surface_Level((TextureClass::MipCountType)texture->Get_Mip_Level_Count()-1);
 	if (hsv_shift.Z==0.0f && smallsurf->Is_Monochrome())
 	{
@@ -1548,9 +1591,9 @@ TextureClass * W3DAssetManager::Recolor_Texture_One_Time(TextureClass *texture, 
 	REF_PTR_RELEASE(smallsurf);
 
 	oldsurf=texture->Get_Surface_Level();
-
 	newsurf=NEW_REF(SurfaceClass,(desc.Width,desc.Height,desc.Format));
 	newsurf->Copy(0,0,0,0,desc.Width,desc.Height,oldsurf);
+#endif
 	newsurf->Hue_Shift(hsv_shift);
 	TextureClass * newtex=NEW_REF(TextureClass,(newsurf,(TextureClass::MipCountType)texture->Get_Mip_Level_Count()));
 	newtex->Set_Mag_Filter(texture->Get_Mag_Filter());

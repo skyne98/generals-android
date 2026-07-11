@@ -1,12 +1,23 @@
+# GeneralsX-Android @build generals-android 11/07/2026 On Android the engine must be a
+# shared library (libmain.so) that SDLActivity loads and whose main() — renamed to
+# SDL_main by SDL3/SDL_main.h — SDL's Android backend invokes. An executable would
+# have no `main` (renamed) and can't be loaded by the Activity.
+if(ANDROID)
+    add_library(z_generals MODULE)
+    set_target_properties(z_generals PROPERTIES OUTPUT_NAME main)
+else()
 add_executable(z_generals WIN32)
+endif()
 
 # Use a binary name that doesn't conflict with original game.
 # GeneralsX @build BenderAI 15/02/2026 Linux branding update
+if(NOT ANDROID)
 if("${CMAKE_SYSTEM}" MATCHES "Windows")
     set_target_properties(z_generals PROPERTIES OUTPUT_NAME "generalszh${RTS_BUILD_OUTPUT_SUFFIX}")
 else()
     # GeneralsX @build BenderAI 15/02/2026 Linux branding update
     set_target_properties(z_generals PROPERTIES OUTPUT_NAME GeneralsXZH)
+endif()
 endif()
 
 # GeneralsX @build BenderAI 13/02/2026 Windows-specific libraries

@@ -2923,13 +2923,70 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 	// Copy the surface to the texture
 	IDirect3DSurface8 *tex_surface = nullptr;
 	texture->GetSurfaceLevel(0, &tex_surface);
+#if defined(__ANDROID__)
+	// D3DXLoadSurfaceFromSurface routes this image-surface -> managed-texture
+	// copy through a DXVK path that leaves the destination zeroed. Lock both
+	// CPU-visible resources and copy rows explicitly for generated team textures.
+	D3DLOCKED_RECT srcLock = {};
+	D3DLOCKED_RECT dstLock = {};
+	const unsigned bytesPerPixel = Get_Bytes_Per_Pixel(format);
+	const HRESULT srcResult = surface->LockRect(&srcLock, nullptr, D3DLOCK_READONLY);
+	const HRESULT dstResult = tex_surface->LockRect(&dstLock, nullptr, 0);
+	if (SUCCEEDED(srcResult) && SUCCEEDED(dstResult) && bytesPerPixel) {
+		const size_t rowBytes = size_t(surface_desc.Width) * bytesPerPixel;
+		for (unsigned y = 0; y < surface_desc.Height; ++y) {
+			memcpy(static_cast<unsigned char *>(dstLock.pBits) + y * dstLock.Pitch,
+				static_cast<const unsigned char *>(srcLock.pBits) + y * srcLock.Pitch,
+				rowBytes);
+		}
+	}
+	if (SUCCEEDED(dstResult)) tex_surface->UnlockRect();
+	if (SUCCEEDED(srcResult)) surface->UnlockRect();
+#else
 	DX8_ErrorCode(D3DXLoadSurfaceFromSurface(tex_surface, nullptr, nullptr, surface, nullptr, nullptr, D3DX_FILTER_BOX, 0));
+#endif
 	tex_surface->Release();
 
 	// Create mipmaps if needed
 	if (mip_level_count!=MIP_LEVELS_1)
 	{
+#if defined(__ANDROID__)
+		// D3DXFilterTexture leaves generated managed-texture mip levels partially
+		// zeroed through DXVK. Populate every level explicitly; nearest sampling is
+		// sufficient for these tiny generated house-colour textures and works for
+		// packed A4R4G4B4 as well as 32-bit formats.
+		const unsigned bytesPerPixel = Get_Bytes_Per_Pixel(format);
+		for (unsigned level = 1; level < texture->GetLevelCount() && bytesPerPixel; ++level) {
+			IDirect3DSurface8 *srcMip = nullptr;
+			IDirect3DSurface8 *dstMip = nullptr;
+			texture->GetSurfaceLevel(level - 1, &srcMip);
+			texture->GetSurfaceLevel(level, &dstMip);
+			D3DSURFACE_DESC srcDesc = {}, dstDesc = {};
+			srcMip->GetDesc(&srcDesc);
+			dstMip->GetDesc(&dstDesc);
+			D3DLOCKED_RECT srcMipLock = {}, dstMipLock = {};
+			const HRESULT srcMipResult = srcMip->LockRect(&srcMipLock, nullptr, D3DLOCK_READONLY);
+			const HRESULT dstMipResult = dstMip->LockRect(&dstMipLock, nullptr, 0);
+			if (SUCCEEDED(srcMipResult) && SUCCEEDED(dstMipResult)) {
+				for (unsigned y = 0; y < dstDesc.Height; ++y) {
+					const unsigned char *srcRow = static_cast<const unsigned char *>(srcMipLock.pBits)
+						+ std::min(y * 2, srcDesc.Height - 1) * srcMipLock.Pitch;
+					unsigned char *dstRow = static_cast<unsigned char *>(dstMipLock.pBits) + y * dstMipLock.Pitch;
+					for (unsigned x = 0; x < dstDesc.Width; ++x) {
+						memcpy(dstRow + x * bytesPerPixel,
+							srcRow + std::min(x * 2, srcDesc.Width - 1) * bytesPerPixel,
+							bytesPerPixel);
+					}
+				}
+			}
+			if (SUCCEEDED(dstMipResult)) dstMip->UnlockRect();
+			if (SUCCEEDED(srcMipResult)) srcMip->UnlockRect();
+			dstMip->Release();
+			srcMip->Release();
+		}
+#else
 		DX8_ErrorCode(D3DXFilterTexture(texture, nullptr, 0, D3DX_FILTER_BOX));
+#endif
 	}
 
 	return texture;

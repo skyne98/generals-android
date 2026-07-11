@@ -295,7 +295,8 @@ static bool Is_Format_Compressed(WW3DFormat texture_format,bool allow_compressio
 			texture_format==WW3D_FORMAT_DXT2 ||
 			texture_format==WW3D_FORMAT_DXT3 ||
 			texture_format==WW3D_FORMAT_DXT4 ||
-			texture_format==WW3D_FORMAT_DXT5) {
+			texture_format==WW3D_FORMAT_DXT5 ||
+			texture_format==WW3D_FORMAT_ASTC_6X6) {
 			compressed=true;
 		}
 	}
@@ -1444,7 +1445,8 @@ static bool	Get_Texture_Information
 		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_DXT2 &&
 		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_DXT3 &&
 		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_DXT4 &&
-		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_DXT5) {
+		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_DXT5 &&
+		thumb->Get_Original_Texture_Format()!=WW3D_FORMAT_ASTC_6X6) {
 		return false;
 	}
 

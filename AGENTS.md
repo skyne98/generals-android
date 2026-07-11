@@ -1,7 +1,11 @@
-# GeneralsX: Instructions for AI Coding Agents
+# Generals on Android: Instructions for AI Coding Agents
 
 ## What I Am
-GeneralsX is a cross-platform port of Command & Conquer: Generals Zero Hour for **Linux and macOS**, porting legacy Windows DirectX 8 + Miles Sound code to a modern stack (SDL3 + DXVK + OpenAL + 64-bit). This is a **massive C++ game engine** (~500k LOC) preserving retail gameplay while modernizing the platform layer.
+This is a port of Command & Conquer: Generals Zero Hour for **Android** (arm64-v8a),
+porting legacy Windows DirectX 8 + Miles Sound code to a modern stack
+(SDL3 + DXVK + OpenAL on native Vulkan). Built on the GeneralsX macOS/Linux
+and ammaarreshi/Generals-Mac-iOS-iPad lineage. This is a **massive C++ game
+engine** (~500k LOC) preserving retail gameplay while modernizing the platform layer.
 
 ## Must-Load Context
 Before starting work, read:
@@ -12,13 +16,14 @@ Before starting work, read:
 - `docs/DEV_BLOG/YYYY-MM-DIARY.md` – current development notes
 
 ## Key Entry Points
-- `GeneralsMD/Code/Main/WinMain.cpp`
-- `Generals/Code/Main/WinMain.cpp`
-- `Core/GameEngineDevice/Source/`
+- `GeneralsMD/Code/Main/SDL3Main.cpp` — Android bootstrap (FS, env, stderr redirect)
+- `GeneralsMD/Code/GameEngineDevice/Source/SDL3GameEngine.cpp` — SDL3 event loop + touch gestures
+- `Core/GameEngineDevice/Source/` — platform abstraction layer
+- `android/` — Gradle APK project (thin container loading libmain.so)
 
 ## Platform Focus
-- **Active**: Linux (`linux64-deploy`), macOS (`macos-vulkan`)
-- **Future/Exploratory**: Windows (MinGW path, issue #29)
+- **Active**: Android (`android-vulkan` preset, arm64-v8a via NDK r27)
+- **Inherited (not maintained here)**: Linux, macOS, iOS (from upstream lineage)
 - **Legacy**: VC6 + DirectX 8 + Miles (reference only)
 
 ## Architecture
@@ -28,23 +33,33 @@ Before starting work, read:
 | Windowing| SDL3              | Win32 API                    |
 | Audio   | OpenAL              | Miles Sound System           |
 | Video   | FFmpeg              | Bink Video (intro/videos)    |
-| Platform| SDL3 + libc         | Win32 POSIX calls            |
+| Platform| SDL3 + libc + NDK    | Win32 POSIX calls            |
 
-**CRITICAL**: Platform code must be isolated to `Core/GameEngineDevice/` and `Core/Libraries/Source/Platform/`. No native Win32/Cocoa/X11 calls in game logic.
+**CRITICAL**: Platform code must be isolated to `Core/GameEngineDevice/` and `Core/Libraries/Source/Platform/`. No native Win32/Cocoa/X11/Android-NDK calls in game logic. Android-specific code is gated behind `#if defined(__ANDROID__)`.
 
 ## Golden Rules
-1. **Single codebase** – Linux and macOS build from same source
+1. **Single codebase** – Android, Linux, macOS, iOS build from same source
 2. **SDL3 everywhere** – No native platform calls in game code
 3. **DXVK everywhere** – DX8 → Vulkan translation on all platforms
 4. **OpenAL everywhere** – Cross-platform audio stack
-5. **64-bit native** – x86_64 only (32-bit via VC6 upstream)
+5. **ARM64 native** – arm64-v8a (Android), x86_64 (Linux/macOS)
 6. **Retail compatibility** – Original replays and mods must work
 7. **Determinism** – Rendering/audio changes must not affect gameplay logic
 8. **No band-aids** – Fix underlying issues, not symptoms
 9. **Update dev blog** – `docs/DEV_BLOG/YYYY-MM-DIARY.md` before committing
 10. **Reference repos** – Study patterns, don't copy-paste
 
+## Android-specific notes
+- DXVK is built from `references/fbraz3-dxvk` (submodule) + `Patches/dxvk-android.patch`
+- `flake.nix` provides the complete NDK + SDK + vcpkg + meson + gradle dev shell
+- Build: `./scripts/build/android/build-android-zh.sh` (configure + compile)
+- Package: `./scripts/build/android/package-android-zh.sh --install` (APK + device install)
+- ASTC texture transcoding: `scripts/build/android/transcode-textures-astc.py`
+- Team-color texture recoloring uses CPU `memcpy` on Android (D3DX surface copy is broken in DXVK)
+- Touch gestures are in `SDL3GameEngine.cpp` (shared with iOS, gated on `__ANDROID__`)
+
 ## Reference Repositories
+- **fbraz3-dxvk** – DXVK local fork (patched for Android in Patches/dxvk-android.patch)
 - **fighter19-dxvk-port** – Primary graphics/platform reference (DXVK + SDL3 on Linux)
 - **jmarshall-win64-modern** – Audio reference (OpenAL implementation, Generals-only)
 - **thesuperhackers-main** – Upstream baseline for regression checks

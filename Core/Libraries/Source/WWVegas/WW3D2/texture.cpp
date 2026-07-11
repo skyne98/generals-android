@@ -606,6 +606,7 @@ TextureClass::TextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	default : break;
@@ -677,6 +678,7 @@ TextureClass::TextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	case WW3D_FORMAT_U8V8:		// Bumpmap
@@ -775,6 +777,7 @@ TextureClass::TextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	default: break;
@@ -821,6 +824,7 @@ TextureClass::TextureClass(IDirect3DBaseTexture8* d3d_texture)
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	default: break;
@@ -1354,6 +1358,7 @@ CubeTextureClass::CubeTextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	default : break;
@@ -1422,6 +1427,7 @@ CubeTextureClass::CubeTextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	case WW3D_FORMAT_U8V8:		// Bumpmap
@@ -1638,6 +1644,7 @@ VolumeTextureClass::VolumeTextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	default : break;
@@ -1707,6 +1714,7 @@ VolumeTextureClass::VolumeTextureClass
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 		IsCompressionAllowed=true;
 		break;
 	case WW3D_FORMAT_U8V8:		// Bumpmap

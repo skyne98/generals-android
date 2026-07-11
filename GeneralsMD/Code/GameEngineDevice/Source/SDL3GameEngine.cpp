@@ -62,7 +62,7 @@ extern Mouse *TheMouse;
 extern Keyboard *TheKeyboard;
 extern GameWindowManager *TheWindowManager;
 
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 #include <atomic>
 
 // ---------------------------------------------------------------------------
@@ -88,6 +88,18 @@ extern GameWindowManager *TheWindowManager;
 // multitasking a few times"). Pause whenever either is set.
 static std::atomic<bool> s_appBackgrounded{false};
 static std::atomic<bool> s_appInactive{false};
+
+#if defined(__ANDROID__)
+// Movie playback services SDL events but bypasses the normal mouse message
+// translators. Latch touch-down so GameClient can consume it as a skip action.
+static std::atomic<Uint64> s_movieSkipTouchUntil{0};
+extern "C" bool GeneralsX_ConsumeMovieSkipTouch()
+{
+	// Keep the request active long enough to skip consecutive startup clips,
+	// rather than requiring one precisely-timed tap for every logo/movie.
+	return SDL_GetTicks() < s_movieSkipTouchUntil.load();
+}
+#endif
 
 static inline bool iosShouldPauseRendering()
 {
@@ -220,6 +232,9 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 
 	switch (event.type) {
 	case SDL_EVENT_FINGER_DOWN:
+#if defined(__ANDROID__)
+		s_movieSkipTouchUntil.store(SDL_GetTicks() + 10000);
+#endif
 		if (s_touch.phase == TouchState::IDLE) {
 			// Defer all BUTTON output: a finger landing could become a tap, a
 			// drag-box, a long-press, or the first finger of a camera pan. A
@@ -617,7 +632,7 @@ void SDL3GameEngine::pollSDL3Events(void)
 				}
 				break;
 
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 			// App suspension/resume: mirror the desktop focus handling so audio
 			// and mouse state pause cleanly (the render gate lives in update()).
 			case SDL_EVENT_DID_ENTER_BACKGROUND:
@@ -668,7 +683,7 @@ void SDL3GameEngine::pollSDL3Events(void)
 			case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			case SDL_EVENT_MOUSE_BUTTON_UP:
 			case SDL_EVENT_MOUSE_WHEEL:
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 				// Belt-and-braces: drop SDL's own touch-synthesized mouse events.
 				// The gesture translator owns all touch->mouse conversion; double
 				// delivery would produce phantom second clicks.
@@ -686,7 +701,7 @@ void SDL3GameEngine::pollSDL3Events(void)
 				}
 				break;
 
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 			case SDL_EVENT_FINGER_DOWN:
 			case SDL_EVENT_FINGER_MOTION:
 			case SDL_EVENT_FINGER_UP:
@@ -712,7 +727,7 @@ void SDL3GameEngine::pollSDL3Events(void)
 		updateTextInputState();
 	}
 
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 	// Poll the long-press timer every frame; a stationary finger emits no events.
 	if (TheMouse && m_SDLWindow) {
 		SDL3Mouse* touchMouse = dynamic_cast<SDL3Mouse*>(TheMouse);

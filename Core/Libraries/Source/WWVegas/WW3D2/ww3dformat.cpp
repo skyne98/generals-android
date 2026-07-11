@@ -95,6 +95,7 @@ void Get_WW3D_Format_Name(WW3DFormat format, StringClass& name)
 	case WW3D_FORMAT_DXT3: name="DXT3"; break;
 	case WW3D_FORMAT_DXT4: name="DXT4"; break;
 	case WW3D_FORMAT_DXT5: name="DXT5"; break;
+	case WW3D_FORMAT_ASTC_6X6: name="ASTC_6X6"; break;
 	}
 }
 
@@ -309,7 +310,15 @@ WW3DFormat Get_Valid_Texture_Format(WW3DFormat format, bool is_compression_allow
 	const DX8Caps* current_caps = DX8Wrapper::Get_Current_Caps();
 	const bool has_caps = (current_caps != nullptr);
 
-	if (!has_caps ||
+	// ASTC support is independent of desktop BC/DXTC support. Android normally
+	// disables DXT while keeping hardware ASTC enabled, so routing ASTC through
+	// Support_DXTC() would incorrectly select the nonexistent ASTC CPU decoder.
+	if (format == WW3D_FORMAT_ASTC_6X6) {
+		if (!has_caps || !is_compression_allowed ||
+			!current_caps->Support_Texture_Format(WW3D_FORMAT_ASTC_6X6))
+			format=WW3D_FORMAT_A8R8G8B8;
+	}
+	else if (!has_caps ||
 		!current_caps->Support_DXTC() ||
 		!is_compression_allowed) {
 		switch (format) {
@@ -335,6 +344,8 @@ WW3DFormat Get_Valid_Texture_Format(WW3DFormat format, bool is_compression_allow
 		case WW3D_FORMAT_DXT4:
 		case WW3D_FORMAT_DXT5:
 			if (!current_caps->Support_Texture_Format(format)) format=WW3D_FORMAT_A8R8G8B8;
+			break;
+		default:
 			break;
 		}
 	}
@@ -521,6 +532,7 @@ unsigned ARGB_Color_To_WW3D_Color(WW3DFormat format, unsigned argb)
 	case WW3D_FORMAT_DXT3:
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
+	case WW3D_FORMAT_ASTC_6X6:
 	default:
 			return 0;
 	}

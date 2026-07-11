@@ -1,0 +1,33 @@
+# Meson cross file: build DXVK for Android (arm64-v8a) on a host.
+#
+# Mirrors cmake/meson-arm64-ios-cross.ini.in but targets the Android NDK.
+# Configured from CMake (cmake/dx8.cmake ANDROID branch) with:
+#   @NDK_TOOLCHAIN_BIN@  = $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/<host>/bin
+#   @ANDROID_SYSROOT@    = $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/<host>/sysroot
+#   @ANDROID_API@         = 24
+#
+# Android has native Vulkan (system libvulkan.so) — NO MoltenVK, unlike iOS.
+# The DXVK WSI driver is SDL3 (set via DXVK_WSI_DRIVER=SDL3 at runtime in
+# SDL3Main.cpp, and -Ddxvk_native_wsi=sdl3 at meson setup).
+#
+# GeneralsX-Android @build generals-android 11/07/2026
+
+[binaries]
+c           = '@NDK_TOOLCHAIN_BIN@/aarch64-linux-android@ANDROID_API@-clang'
+cpp         = '@NDK_TOOLCHAIN_BIN@/aarch64-linux-android@ANDROID_API@-clang++'
+ar          = '@NDK_TOOLCHAIN_BIN@/llvm-ar'
+strip       = '@NDK_TOOLCHAIN_BIN@/llvm-strip'
+pkg-config  = 'pkg-config'
+windres     = 'false'
+
+[host_machine]
+system      = 'android'
+cpu_family  = 'aarch64'
+cpu         = 'aarch64'
+endian      = 'little'
+
+[built-in options]
+c_args       = ['--target=aarch64-linux-android@ANDROID_API@', '--sysroot=@ANDROID_SYSROOT@', '-DANDROID', '-fPIC', '-DVK_ENABLE_BETA_EXTENSIONS']
+cpp_args     = ['--target=aarch64-linux-android@ANDROID_API@', '--sysroot=@ANDROID_SYSROOT@', '-DANDROID', '-fPIC', '-stdlib=libc++', '-DVK_ENABLE_BETA_EXTENSIONS']
+c_link_args  = ['--target=aarch64-linux-android@ANDROID_API@', '--sysroot=@ANDROID_SYSROOT@', '-lm', '-landroid']
+cpp_link_args= ['--target=aarch64-linux-android@ANDROID_API@', '--sysroot=@ANDROID_SYSROOT@', '-lm', '-landroid', '-lc++']

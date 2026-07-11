@@ -51,7 +51,7 @@ if(SAGE_USE_SDL3)
     # Before SDL3_image build: force PNG discovery to platform-specific libpng
     # Linux: System libpng16.so is dynamic shared library
     # macOS: Use Homebrew PNG or system framework
-    if(NOT APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # Find system shared libpng, bypassing vcpkg's static .a.
         # SDL3_image requires a shared .so but vcpkg only provides static libpng16.a.
         # NO_CMAKE_PATH + NO_CMAKE_FIND_ROOT_PATH skips all vcpkg-injected search paths,
@@ -65,6 +65,14 @@ if(SAGE_USE_SDL3)
         # the stb and Apple ImageIO backends that SDL3_image enables on Apple platforms.
         set(SDLIMAGE_PNG_LIBPNG OFF CACHE BOOL "No libpng on iOS; stb/ImageIO decode PNG" FORCE)
         set(SDLIMAGE_PNG_SHARED OFF CACHE BOOL "No shared libpng on iOS" FORCE)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        # GeneralsX-Android @build generals-android 11/07/2026
+        # Android: vcpkg ships only static libpng16.a, but SDL3_image's
+        # SDL3IMAGE_DEPS_SHARED path requires a shared .so and rejects the .a.
+        # Disable the external libpng backend — PNG still decodes through SDL3_image's
+        # bundled stb backend (no Apple ImageIO on Android, but stb is portable).
+        set(SDLIMAGE_PNG_LIBPNG OFF CACHE BOOL "No shared libpng on Android; stb decodes PNG" FORCE)
+        set(SDLIMAGE_PNG_SHARED OFF CACHE BOOL "No shared libpng on Android" FORCE)
     else()
         # macOS: Force Homebrew's dynamic libpng, bypassing vcpkg's static .a
         # GeneralsX @build BenderAI 24/02/2026 - Phase 5 macOS port

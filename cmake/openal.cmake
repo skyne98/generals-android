@@ -45,6 +45,22 @@ if(SAGE_USE_OPENAL)
     if(WIN32)
         # Windows: WASAPI is the modern low-latency audio API
         set(ALSOFT_REQUIRE_WASAPI ON CACHE BOOL "Require WASAPI backend on Windows" FORCE)
+    elseif(ANDROID)
+        # Use the NDK's native OpenSL ES backend. OpenAL Soft's FindOpenSL does
+        # not search the NDK sysroot correctly when vcpkg's toolchain is layered
+        # over Android's toolchain, so provide the paths explicitly.
+        set(ALSOFT_BACKEND_SDL3 OFF CACHE BOOL "Disable SDL3 OpenAL backend" FORCE)
+        set(ALSOFT_REQUIRE_SDL3 OFF CACHE BOOL "Do not require SDL3 backend" FORCE)
+        unset(SDL3_DIR CACHE)
+        set(CMAKE_DISABLE_FIND_PACKAGE_SDL3 TRUE CACHE BOOL
+            "OpenAL does not need to rediscover in-tree SDL3" FORCE)
+        set(ALSOFT_BACKEND_OPENSL ON CACHE BOOL "Enable OpenSL ES on Android" FORCE)
+        set(ALSOFT_REQUIRE_OPENSL ON CACHE BOOL "Require OpenSL ES on Android" FORCE)
+        set(_opensl_sysroot "${CMAKE_ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot")
+        set(OPENSL_INCLUDE_DIR "${_opensl_sysroot}/usr/include" CACHE PATH "OpenSL headers" FORCE)
+        set(OPENSL_ANDROID_INCLUDE_DIR "${_opensl_sysroot}/usr/include" CACHE PATH "Android OpenSL headers" FORCE)
+        set(OPENSL_LIBRARY "${_opensl_sysroot}/usr/lib/aarch64-linux-android/24/libOpenSLES.so"
+            CACHE FILEPATH "Android OpenSL ES library" FORCE)
     endif()
 
     FetchContent_MakeAvailable(openal_soft)

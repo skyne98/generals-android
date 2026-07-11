@@ -695,32 +695,54 @@ void DX8Caps::Check_Texture_Compression_Support(const D3DCAPS8& caps)
 		SupportTextureFormat[WW3D_FORMAT_DXT3]|
 		SupportTextureFormat[WW3D_FORMAT_DXT4]|
 		SupportTextureFormat[WW3D_FORMAT_DXT5];
+#if defined(__ANDROID__)
+	// Mali-G615 exposes BC format properties through Vulkan even though the core
+	// textureCompressionBC feature is false. DXVK's D3D format query therefore
+	// makes the game upload DXT textures that sample as black. WW3D already has
+	// a complete DXT1/3/5 CPU decoder, so force its uncompressed upload path.
+	SupportTextureFormat[WW3D_FORMAT_DXT1] = false;
+	SupportTextureFormat[WW3D_FORMAT_DXT2] = false;
+	SupportTextureFormat[WW3D_FORMAT_DXT3] = false;
+	SupportTextureFormat[WW3D_FORMAT_DXT4] = false;
+	SupportTextureFormat[WW3D_FORMAT_DXT5] = false;
+	SupportDXTC = false;
+#endif
 	DXLOG(("Texture compression support: %s\r\n",SupportDXTC ? "Yes" : "No"));
 }
 
 void DX8Caps::Check_Texture_Format_Support(WW3DFormat display_format,const D3DCAPS8& caps)
 {
+	D3DFORMAT d3d_display_format;
 	if (display_format==WW3D_FORMAT_UNKNOWN) {
+#if defined(__ANDROID__)
+		// SDL/DXVK's compositor backbuffer does not map to a legacy WW3D display
+		// format. D3D only uses AdapterFormat to validate conversion support here;
+		// X8R8G8B8 is the normal Android presentation-compatible adapter format.
+		d3d_display_format=D3DFMT_X8R8G8B8;
+#else
 		for (unsigned i=0;i<WW3D_FORMAT_COUNT;++i) {
 			SupportTextureFormat[i]=false;
 		}
 		return;
+#endif
+	} else {
+		d3d_display_format=WW3DFormat_To_D3DFormat(display_format);
 	}
-	D3DFORMAT d3d_display_format=WW3DFormat_To_D3DFormat(display_format);
 	for (unsigned i=0;i<WW3D_FORMAT_COUNT;++i) {
 		if (i==WW3D_FORMAT_UNKNOWN) {
 			SupportTextureFormat[i]=false;
 		}
 		else {
 			WW3DFormat format=(WW3DFormat)i;
-			SupportTextureFormat[i]=SUCCEEDED(
-				Direct3D->CheckDeviceFormat(
-					caps.AdapterOrdinal,
-					caps.DeviceType,
-					d3d_display_format,
-					0,
-					D3DRTYPE_TEXTURE,
-					WW3DFormat_To_D3DFormat(format)));
+			D3DFORMAT d3d_format = WW3DFormat_To_D3DFormat(format);
+			HRESULT formatResult = Direct3D->CheckDeviceFormat(
+				caps.AdapterOrdinal,
+				caps.DeviceType,
+				d3d_display_format,
+				0,
+				D3DRTYPE_TEXTURE,
+				d3d_format);
+			SupportTextureFormat[i]=SUCCEEDED(formatResult);
 			if (SupportTextureFormat[i]) {
 				StringClass name(0,true);
 				Get_WW3D_Format_Name(format,name);

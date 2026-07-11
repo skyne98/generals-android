@@ -87,6 +87,10 @@
 #include "GameLogic/Object.h"
 #include "GameLogic/ScriptEngine.h"		// For TheScriptEngine - jkmcd
 
+#if defined(__ANDROID__)
+extern "C" bool GeneralsX_ConsumeMovieSkipTouch();
+#endif
+
 #define DRAWABLE_HASH_SIZE	8192
 
 /// The GameClient singleton instance
@@ -526,6 +530,16 @@ void GameClient::update()
 	// create the FRAME_TICK message
 	GameMessage *frameMsg = TheMessageStream->appendMessage( GameMessage::MSG_FRAME_TICK );
 	frameMsg->appendTimestampArgument( getFrame() );
+#if defined(__ANDROID__)
+	// Startup movies are asynchronous and do not run isMovieAbortRequested().
+	// Apply the latched touch directly, matching the existing Escape behavior.
+	if (TheDisplay->isMoviePlaying()
+		&& TheGlobalData->m_allowExitOutOfMovies
+		&& GeneralsX_ConsumeMovieSkipTouch())
+	{
+		TheDisplay->stopMovie();
+	}
+#endif
 	static Bool playSizzle = FALSE;
 	// We need to show the movie first.
 	if(TheGlobalData->m_playIntro && !TheDisplay->isMoviePlaying())
@@ -824,6 +838,13 @@ Bool GameClient::isMovieAbortRequested()
 			return TRUE;
 		}
 	}
+
+#if defined(__ANDROID__)
+	// Movie playback bypasses normal input translators. SDL latches touch-down
+	// events so even a short tap cannot be lost between movie polling frames.
+	if (GeneralsX_ConsumeMovieSkipTouch())
+		return TRUE;
+#endif
 
 	if (TheGameEngine && TheGameEngine->getQuitting())
 	{

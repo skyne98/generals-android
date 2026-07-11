@@ -1,0 +1,53 @@
+diff --git a/src/dxvk/dxvk_extensions.h b/src/dxvk/dxvk_extensions.h
+index aa002a77..cac16df5 100644
+--- a/src/dxvk/dxvk_extensions.h
++++ b/src/dxvk/dxvk_extensions.h
+@@ -311,7 +311,7 @@ namespace dxvk {
+     DxvkExt extMultiDraw                      = { VK_EXT_MULTI_DRAW_EXTENSION_NAME,                         DxvkExtMode::Optional };
+     DxvkExt extNonSeamlessCubeMap             = { VK_EXT_NON_SEAMLESS_CUBE_MAP_EXTENSION_NAME,              DxvkExtMode::Optional };
+     DxvkExt extPageableDeviceLocalMemory      = { VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME,       DxvkExtMode::Optional };
+-    DxvkExt extRobustness2                    = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,                       DxvkExtMode::Required };
++    DxvkExt extRobustness2                    = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,                       DxvkExtMode::Optional };
+     DxvkExt extShaderModuleIdentifier         = { VK_EXT_SHADER_MODULE_IDENTIFIER_EXTENSION_NAME,           DxvkExtMode::Optional };
+     DxvkExt extShaderStencilExport            = { VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,              DxvkExtMode::Optional };
+     DxvkExt extSwapchainColorSpace            = { VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME,              DxvkExtMode::Optional };
+diff --git a/src/wsi/sdl3/wsi_platform_sdl3.cpp b/src/wsi/sdl3/wsi_platform_sdl3.cpp
+index 9975cdac..55dbfbbb 100644
+--- a/src/wsi/sdl3/wsi_platform_sdl3.cpp
++++ b/src/wsi/sdl3/wsi_platform_sdl3.cpp
+@@ -15,6 +15,8 @@ namespace dxvk::wsi {
+         "SDL3.dll"
+ #elif defined(__APPLE__)
+         "libSDL3.0.dylib"
++#elif defined(__ANDROID__)
++        "libSDL3.so"
+ #else
+         "libSDL3.so.0"
+ #endif
+diff --git a/src/wsi/sdl3/wsi_platform_sdl3_funcs.h b/src/wsi/sdl3/wsi_platform_sdl3_funcs.h
+index 624c2193..feb5f61a 100644
+--- a/src/wsi/sdl3/wsi_platform_sdl3_funcs.h
++++ b/src/wsi/sdl3/wsi_platform_sdl3_funcs.h
+@@ -9,6 +9,7 @@ SDL_PROC(bool, SDL_GetClosestFullscreenDisplayMode, (SDL_DisplayID, int, int, fl
+ SDL_PROC(SDL_DisplayID, SDL_GetDisplayForWindow, (SDL_Window*))
+ SDL_PROC(SDL_WindowFlags, SDL_GetWindowFlags, (SDL_Window *))
+ SDL_PROC(bool, SDL_GetWindowSize, (SDL_Window*, int*, int*))
++SDL_PROC(bool, SDL_GetWindowSizeInPixels, (SDL_Window*, int*, int*))
+ SDL_PROC(bool, SDL_SetWindowSize, (SDL_Window*, int, int))
+ SDL_PROC(bool, SDL_SetWindowPosition, (SDL_Window*, int, int))
+ SDL_PROC(bool, SDL_SetWindowFullscreen, (SDL_Window*, bool))
+diff --git a/src/wsi/sdl3/wsi_window_sdl3.cpp b/src/wsi/sdl3/wsi_window_sdl3.cpp
+index 10fca478..df635038 100644
+--- a/src/wsi/sdl3/wsi_window_sdl3.cpp
++++ b/src/wsi/sdl3/wsi_window_sdl3.cpp
+@@ -22,8 +22,8 @@ namespace dxvk::wsi {
+     int w = 0;
+     int h = 0;
+ 
+-    if (!SDL_GetWindowSize(window, &w, &h))
+-      Logger::err(str::format("SDL3 WSI: SDL_GetWindowSize: ", SDL_GetError()));
++    if (!SDL_GetWindowSizeInPixels(window, &w, &h))
++      Logger::err(str::format("SDL3 WSI: SDL_GetWindowSizeInPixels: ", SDL_GetError()));
+ 
+     if (pWidth)
+       *pWidth = uint32_t(w);

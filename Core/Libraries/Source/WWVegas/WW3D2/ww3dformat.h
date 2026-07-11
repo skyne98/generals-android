@@ -93,6 +93,9 @@ enum WW3DFormat {
 	WW3D_FORMAT_DXT3,
 	WW3D_FORMAT_DXT4,
 	WW3D_FORMAT_DXT5,
+	// GeneralsX @feature BenderAI 11/07/2026 Private ASTC 6x6 compressed format (Android-focused).
+	// Uses FourCC 'AS66', 16 bytes per 6x6 pixel block, full alpha.
+	WW3D_FORMAT_ASTC_6X6,
 	WW3D_FORMAT_COUNT	// Used only to determine number of surface formats
 };
 
@@ -126,6 +129,7 @@ inline bool Has_Alpha(WW3DFormat format) {
 		case WW3D_FORMAT_DXT3:
 		case WW3D_FORMAT_DXT4:
 		case WW3D_FORMAT_DXT5:
+		case WW3D_FORMAT_ASTC_6X6:
 			return true;
 			break;
 		default:
@@ -149,6 +153,9 @@ inline int Alpha_Bits(WW3DFormat format) {
 		case WW3D_FORMAT_DXT4:
 		case WW3D_FORMAT_DXT5:
 			return 4;
+			break;
+		case WW3D_FORMAT_ASTC_6X6:
+			return 8;
 			break;
 		case WW3D_FORMAT_A1R5G5B5:
 		case WW3D_FORMAT_DXT2:

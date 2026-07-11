@@ -100,7 +100,8 @@ DDSFileClass::DDSFileClass(const char* name,unsigned reduction_factor)
 		Format==WW3D_FORMAT_DXT2 ||
 		Format==WW3D_FORMAT_DXT3 ||
 		Format==WW3D_FORMAT_DXT4 ||
-		Format==WW3D_FORMAT_DXT5);
+		Format==WW3D_FORMAT_DXT5 ||
+		Format==WW3D_FORMAT_ASTC_6X6);
 
 	MipLevels=SurfaceDesc.MipMapCount;
 	if (MipLevels==0) MipLevels=1;
@@ -266,6 +267,10 @@ unsigned DDSFileClass::Calculate_DXTC_Surface_Size
 	case WW3D_FORMAT_DXT4:
 	case WW3D_FORMAT_DXT5:
 		level_size*=16;
+		break;
+	case WW3D_FORMAT_ASTC_6X6:
+		// ASTC 6x6: 16 bytes per 6x6 pixel block.
+		level_size=((width+5)/6)*((height+5)/6)*16;
 		break;
 	}
 
@@ -458,6 +463,11 @@ void DDSFileClass::Copy_Level_To_Surface
 					}
 				}
 			}
+			else if (Format==WW3D_FORMAT_ASTC_6X6) {
+				// ASTC: cannot HSV-shift compressed blocks; just copy raw data.
+				unsigned compressed_size=Get_Level_Size(level);
+				memcpy(dest_surface,Get_Memory_Pointer(level),compressed_size);
+			}
 			else {
 				WWASSERT(0);
 			}
@@ -620,6 +630,12 @@ void DDSFileClass::Copy_CubeMap_Level_To_Surface
 						*dest_ptr++=*src_ptr++;		// Bytes 5-8 of color block
 					}
 				}
+			}
+			else if (Format==WW3D_FORMAT_ASTC_6X6)
+			{
+				// ASTC: cannot HSV-shift compressed blocks; just copy raw data.
+				unsigned compressed_size=Get_Level_Size(level);
+				memcpy(dest_surface,Get_CubeMap_Memory_Pointer(face,level),compressed_size);
 			}
 			else
 			{
@@ -793,6 +809,12 @@ void DDSFileClass::Copy_Volume_Level_To_Surface
 						*dest_ptr++=*src_ptr++;		// Bytes 5-8 of color block
 					}
 				}
+			}
+			else if (Format==WW3D_FORMAT_ASTC_6X6)
+			{
+				// ASTC: cannot HSV-shift compressed blocks; just copy raw data.
+				unsigned compressed_size=Get_Level_Size(level);
+				memcpy(dest_surface,Get_Volume_Memory_Pointer(level),compressed_size);
 			}
 			else
 			{

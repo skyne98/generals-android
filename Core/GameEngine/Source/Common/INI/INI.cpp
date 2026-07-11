@@ -1666,7 +1666,9 @@ Type scanType(std::string_view token)
         if constexpr (std::is_floating_point_v<Type>)
         {
                 // GeneralsX @bugfix BenderAI 07/04/2026 Apple SDKs in our deployment target do not expose std::from_chars for floats.
-                #if defined(__APPLE__)
+                // GeneralsX-Android @bugfix generals-android 11/07/2026 NDK libc++ (llvm-18) also deletes the
+                // floating-point std::from_chars overload; use the same strtod fallback.
+                #if defined(__APPLE__) || defined(__ANDROID__)
                 const std::string tokenString(token);
                 char *end = nullptr;
                 const double result = std::strtod(tokenString.c_str(), &end);
@@ -1691,6 +1693,10 @@ Type scanType(std::string_view token)
         }
 
         // TheSuperHackers @info std::from_chars cannot parse "-1" as uint32 so the result needs to be int64 for integers.
+        // GeneralsX-Android @bugfix generals-android 11/07/2026 guard with if constexpr so the float instantiation
+        // (whose result type is float here) does not type-check this deleted std::from_chars overload on libc++.
+        if constexpr (std::is_integral_v<Type>)
+        {
 	std::conditional_t<std::is_integral_v<Type>, Int64, Type> result{};
 	const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), result);
 
@@ -1700,6 +1706,8 @@ Type scanType(std::string_view token)
 	}
 
 	return static_cast<Type>(result);
+        }
+        throw INI_INVALID_DATA; // unreachable: scanType is only instantiated for arithmetic types
 }
 
 #endif

@@ -34,9 +34,10 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-// On iOS, SDL renames main() to SDL_main and provides its own UIApplicationMain
-// bootstrap; the app lifecycle (suspend/resume, window) is owned by SDL.
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
+// On iOS/Android, SDL renames main() to SDL_main and provides its own app
+// bootstrap (UIApplicationMain on iOS; SDLActivity on Android); the app
+// lifecycle (suspend/resume, window) is owned by SDL.
 #include <SDL3/SDL_main.h>
 #include <cerrno>
 #include <sys/stat.h>
@@ -49,7 +50,9 @@
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>   // _exit()
-#include <glob.h>     // glob() for Vulkan ICD discovery
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <glob.h>     // glob() for Vulkan ICD discovery (desktop Linux only; Bionic has glob at API>=28)
+#endif
 
 // USER INCLUDES (match WinMain.cpp pattern)
 #include "Lib/BaseType.h"
@@ -120,6 +123,7 @@ extern Int GameMain();
  */
 static void FilterSoftwareVulkanICDs()
 {
+#if defined(__linux__) && !defined(__ANDROID__)
 	if (getenv("VK_DRIVER_FILES") || getenv("VK_ICD_FILENAMES")) {
 		return;
 	}
@@ -171,6 +175,9 @@ static void FilterSoftwareVulkanICDs()
 		fprintf(stderr, "WARNING: Vulkan ICD filter: no hardware ICDs found, LLVMpipe exclusion skipped\n");
 		fprintf(stderr, "WARNING: If startup crashes in libvulkan_lvp.so, set VK_DRIVER_FILES manually\n");
 	}
+#else
+	// Android: no desktop Vulkan ICD discovery (system libvulkan.so is the loader); no-op.
+#endif
 }
 
 /**
@@ -197,8 +204,13 @@ static void FilterSoftwareVulkanICDs()
  */
 static void FilterPipeWireOpenAL()
 {
+#if defined(__ANDROID__)
+	// OpenAL Soft is built with the NDK OpenSL ES backend on Android. Android
+	// also defines __linux__, so this must precede desktop Linux handling.
+	setenv("ALSOFT_DRIVERS", "opensl", 1);
+	fprintf(stderr, "INFO: OpenAL: ALSOFT_DRIVERS=opensl (Android)\n");
+#elif defined(__linux__)
 	// GeneralsX @bugfix Copilot 24/03/2026 PipeWire/OpenAL workaround is Linux-only; keep macOS CoreAudio backend selection untouched.
-	#if defined(__linux__)
 	// Crash: alcOpenDevice() hits 'movaps %xmm1,0x26260(%rbx)' — SSE movaps requires
 	// 16-byte alignment; a misaligned ALCdevice struct faults regardless of backend.
 	// Disabling CPU extensions forces openal-soft to use scalar code that has no
@@ -215,9 +227,9 @@ static void FilterPipeWireOpenAL()
 		setenv("ALSOFT_DRIVERS", "pulse,alsa,oss,jack,null,wave", 1);
 		fprintf(stderr, "INFO: OpenAL: ALSOFT_DRIVERS=pulse,alsa,oss,jack,null,wave (pipewire excluded)\n");
 	}
-	#else
+#else
 	fprintf(stderr, "INFO: OpenAL: keeping default driver selection on non-Linux platform\n");
-	#endif
+#endif
 }
 
 /**
@@ -426,6 +438,66 @@ int main(int argc, char* argv[])
 			}
 		}
 	}
+#elif defined(__ANDROID__)
+	// GeneralsX-Android @build generals-android 11/07/2026 Android FS bootstrap.
+	// No funopen/stderr-swap (Android: stderr -> logcat via SDL's backend). Set the
+	// DXVK env vars and chdir to where GameData is sideloaded. Preference order:
+	//   1. $GENERALSX_DATA_PATH (env, if MainActivity ever sets it)
+	//   2. /sdcard/Android/data/com.generalsx.android/files  (adb push target; the
+	//      app's own external dir is readable without MANAGE_EXTERNAL_STORAGE)
+	//   3. $HOME (SDL3 may set this to the app's internal data dir)
+	//   4. current dir
+	setenv("DXVK_LOG_LEVEL", "none", 0);
+	// GeneralsX-Android @bugfix generals-android 11/07/2026 Capture stderr to a file.
+	// Android native apps' stderr -> /dev/null by default (logcat only captures it
+	// after SDL_Init redirects, but main() may exit before SDL_Init). freopen to a
+	// log in the internal files dir so we can adb pull / run-as cat the diagnostics.
+	//
+	// GameData lives in the app's INTERNAL files dir (/data/data/<pkg>/files). The
+	// external /sdcard path is blocked by scoped storage (Android 11+, targetSdk
+	// 35) even for the app's own package dir; the internal dir is always app-
+	// readable/writable. Sideload via: adb shell run-as <pkg> tar -xf /data/local/tmp/gamedata.tar -C files/
+	const char *dataDir = getenv("GENERALSX_DATA_PATH");
+	if (dataDir == nullptr || access(dataDir, R_OK) != 0) {
+		dataDir = "/data/data/com.generalsx.android/files";  // internal: always accessible
+	}
+	if (access(dataDir, R_OK) != 0) {
+		dataDir = getenv("HOME");
+	}
+	if (dataDir != nullptr) {
+		char logPath[1100];
+		snprintf(logPath, sizeof(logPath), "%s/generals-stderr.log", dataDir);
+		freopen(logPath, "w", stderr);
+		setvbuf(stderr, nullptr, _IOLBF, 0);
+	}
+	// Belt-and-suspenders: also try the app's INTERNAL files dir if the external
+	// freopen failed (scoped storage may block /sdcard writes). /data/data/<pkg>/files
+	// is always writable by the app; pull via `adb shell run-as <pkg> cat ...`.
+	{
+		const char *internalDir = "/data/data/com.generalsx.android/files";
+		mkdir(internalDir, 0755);  // create if missing (fopen can't create dirs)
+		const char *internalLog = "/data/data/com.generalsx.android/files/generals-stderr.log";
+		FILE *f = fopen(internalLog, "w");
+		if (f) {
+			fclose(f);
+			freopen(internalLog, "w", stderr);
+			setvbuf(stderr, nullptr, _IOLBF, 0);
+			fprintf(stderr, "INFO: stderr redirected to internal files dir (external was unwritable)\n");
+		}
+	}
+	// DXVK shader/state cache must be app-writable and persistent. Android native
+	// processes do not reliably define HOME; /data/local/tmp is shell-owned, so
+	// the previous fallback silently prevented cache creation and recompiled
+	// pipelines during every session.
+	const char *cacheDir = "/data/data/com.generalsx.android/cache/dxvk";
+	mkdir("/data/data/com.generalsx.android/cache", 0755);
+	mkdir(cacheDir, 0755);
+	setenv("DXVK_STATE_CACHE_PATH", cacheDir, 1);
+	if (dataDir != nullptr && chdir(dataDir) == 0) {
+		fprintf(stderr, "INFO: Android working directory: %s\n", dataDir);
+	} else {
+		fprintf(stderr, "WARNING: Android chdir failed; using default CWD for GameData\n");
+	}
 #endif
 
 	fprintf(stderr, "=================================================\n");
@@ -466,7 +538,7 @@ int main(int argc, char* argv[])
 		// This prevents LLVM SIGSEGV crash during Vulkan driver enumeration
 		// Must be done here, not in SDL3GameEngine::init() which is too late
 		fprintf(stderr, "INFO: Initializing SDL3 video subsystem...\n");
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 		// All mouse events are synthesized by the gesture translator in
 		// SDL3GameEngine.cpp; SDL's automatic touch->mouse synthesis would
 		// double-deliver finger 1 and fight the two-finger pan logic.
@@ -495,12 +567,37 @@ int main(int argc, char* argv[])
 
 		// Create SDL3 window with Vulkan support
 		fprintf(stderr, "INFO: Creating SDL3 Vulkan window...\n");
-		Uint32 windowFlags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;  // Start hidden, show after D3D init
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-		// Request a native-resolution Metal drawable (e.g. 2868x1320 instead of the
+		// GeneralsX-Android @bugfix generals-android 11/07/2026 do NOT start hidden on
+		// Android: a hidden SDL window doesn't acquire its ANativeWindow, so
+		// vkCreateAndroidSurfaceKHR (during DXVK WW3D::Init) gets a null window and
+		// fails with VK_ERROR_OUT_OF_HOST_MEMORY. The surface must be visible so the
+		// SurfaceView's surface attaches before DXVK creates the Vulkan surface.
+		Uint32 windowFlags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+#if !defined(__ANDROID__)
+		windowFlags |= SDL_WINDOW_HIDDEN;  // Start hidden, show after D3D init (desktop/iOS)
+#endif
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
+		// Request a native-resolution drawable (e.g. 2868x1320 instead of the
 		// 956x440 point size). Without this the swapchain renders at point size and
 		// the display upscales 3x, visibly blurring textures and terrain.
 		windowFlags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#endif
+#if defined(__ANDROID__)
+		// GeneralsX-Android @bugfix generals-android 11/07/2026 Lock to landscape.
+		// SDL3's Android backend calls setOrientation() from SDL_CreateWindow,
+		// computing a requested orientation from the window's aspect ratio. With the
+		// default it requests FULL_USER (13), the device rotates to portrait, the
+		// SurfaceView surface is destroyed+recreated mid-init, and DXVK's acquired
+		// ANativeWindow goes stale -> vkCreateAndroidSurfaceKHR fails with
+		// VK_ERROR_OUT_OF_HOST_MEMORY. Restricting to landscape orientations keeps
+		// the surface stable so DXVK can create the Vulkan surface.
+		SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+		// GeneralsX-Android @bugfix generals-android 11/07/2026 Per SDL issue #12957,
+		// Android calls surfaceDestroyed (nulling the window's ANativeWindow) during
+		// window setup; creating the window fullscreen keeps the surface stable so
+		// vkCreateAndroidSurfaceKHR succeeds (otherwise DXVK reports
+		// VK_ERROR_OUT_OF_HOST_MEMORY from a null native_window).
+		windowFlags |= SDL_WINDOW_FULLSCREEN;
 #endif
 		TheSDL3Window = SDL_CreateWindow(
 			"Command & Conquer Generals: Zero Hour",
@@ -518,7 +615,7 @@ int main(int argc, char* argv[])
 		ApplicationHWnd = (HWND)TheSDL3Window;
 		fprintf(stderr, "INFO: SDL3 window created successfully\n");
 
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || defined(__ANDROID__)
 		// Match the game's internal resolution to the phone screen's aspect ratio.
 		// Without this the engine runs its 4:3 default inside the 19.5:9 display:
 		// pillarboxed picture and a skewed window->game coordinate mapping. Height

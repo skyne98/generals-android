@@ -58,5 +58,15 @@ void* CreateThread(void *lpSecure, size_t dwStackSize, start_routine lpStartAddr
 
 int TerminateThread(void *hThread, unsigned long dwExitCode)
 {
+#if defined(__ANDROID__)
+	// GeneralsX-Android @bugfix generals-android 11/07/2026 Android Bionic omits
+	// pthread_cancel (deliberately — it's unsafe and discouraged even on glibc).
+	// Stub: Win32 TerminateThread is rarely used by the engine; a no-op return is
+	// the safe first-running-build shim. Revisit with a cancellation flag if a
+	// real cancellation site surfaces at runtime.
+	(void)hThread; (void)dwExitCode;
+	return 0;
+#else
 	return pthread_cancel((pthread_t)hThread);
+#endif
 }

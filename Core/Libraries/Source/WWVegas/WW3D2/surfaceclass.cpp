@@ -849,6 +849,7 @@ bool SurfaceClass::Is_Monochrome()
 		case WW3D_FORMAT_DXT3:
 		case WW3D_FORMAT_DXT4:
 		case WW3D_FORMAT_DXT5:
+		case WW3D_FORMAT_ASTC_6X6:
 			is_compressed = true;
 		break;
 	}

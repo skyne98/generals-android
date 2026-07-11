@@ -1,0 +1,20 @@
+diff --git a/src/common/linux/gsthreadlinux.c b/src/common/linux/gsthreadlinux.c
+index ed586fa..d3391a9 100644
+--- a/src/common/linux/gsthreadlinux.c
++++ b/src/common/linux/gsthreadlinux.c
+@@ -69,10 +69,15 @@ void gsiCancelThread(GSIThreadID id)
+     //should i destroy the attributes here?
+     pthread_attr_destroy(&id.attr);
+ 
++#if defined(__ANDROID__)
++    // GeneralsX-Android @bugfix generals-android 11/07/2026 Bionic has no pthread_cancel.
++    gsDebugFormat(GSIDebugCat_Common, GSIDebugType_Misc, GSIDebugLevel_WarmError, "pthread_cancel unavailable on Android; thread not cancelled\r\n");
++#else
+     if (pthread_cancel(id.thread) != PTHREAD_NO_ERROR) {
+         //there was an error - how should we handle these? or should we?
+         gsDebugFormat(GSIDebugCat_Common, GSIDebugType_Misc, GSIDebugLevel_WarmError, "Failed to cancel thread\r\n");
+     }
++#endif
+     //free up memory and set to NULL
+ 
+     gsifree(&id.thread);

@@ -1932,7 +1932,6 @@ void DX8TextureCategoryClass::Render()
 
 
 
-
         }
 
 		/*

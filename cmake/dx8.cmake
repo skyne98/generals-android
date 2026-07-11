@@ -28,8 +28,10 @@ if(SAGE_USE_DX8)
   FetchContent_MakeAvailable(dx8)
   message(STATUS "Using DirectX 8 SDK (Windows native)")
 
-elseif(APPLE AND SAGE_USE_MOLTENVK)
-  # macOS: Build DXVK 2.6 from source using Meson + MoltenVK
+elseif((APPLE AND SAGE_USE_MOLTENVK) OR (CMAKE_SYSTEM_NAME STREQUAL "Android"))
+  # macOS/iOS: Build DXVK 2.6 from source using Meson + MoltenVK.
+  # Android: same Meson-from-source path, but native Vulkan (no MoltenVK) —
+  # GeneralsX-Android @build generals-android 11/07/2026 added the Android arm.
   # GeneralsX @build BenderAI 24/02/2026 - Phase 5 macOS port (Session 61)
   find_program(MESON_EXECUTABLE meson HINTS /usr/local/bin /opt/homebrew/bin)
   find_program(NINJA_EXECUTABLE ninja HINTS /usr/local/bin /opt/homebrew/bin)
@@ -157,14 +159,40 @@ elseif(APPLE AND SAGE_USE_MOLTENVK)
     configure_file(${CMAKE_SOURCE_DIR}/cmake/meson-arm64-ios-cross.ini.in
                    ${CMAKE_BINARY_DIR}/meson-arm64-ios-cross.ini @ONLY)
     set(DXVK_MESON_MACHINE_ARGS --cross-file ${CMAKE_BINARY_DIR}/meson-arm64-ios-cross.ini)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    # GeneralsX-Android @build generals-android 11/07/2026
+    # Android: native Vulkan (system libvulkan.so) — no MoltenVK. Build DXVK
+    # via meson with the NDK cross-file. The WSI is SDL3 (same as iOS/macOS).
+    # Patches/dxvk-android.patch reuses the iOS high-DPI WSI fix verbatim and
+    # pins the Vulkan loader to libvulkan.so.
+    if(NOT DEFINED ENV{ANDROID_NDK_HOME})
+      message(FATAL_ERROR "Android DXVK build requires ANDROID_NDK_HOME (NDK r26+)")
+    endif()
+    set(ANDROID_API "24")
+    set(NDK_TOOLCHAIN_BIN "$ENV{ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin")
+    if(NOT EXISTS "${NDK_TOOLCHAIN_BIN}/aarch64-linux-android${ANDROID_API}-clang")
+      # fall back to darwin host if building on macOS
+      set(NDK_TOOLCHAIN_BIN "$ENV{ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/darwin-x86_64/bin")
+    endif()
+    set(ANDROID_SYSROOT "$ENV{ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot")
+    if(NOT EXISTS "${ANDROID_SYSROOT}")
+      set(ANDROID_SYSROOT "$ENV{ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot")
+    endif()
+    configure_file(${CMAKE_SOURCE_DIR}/cmake/meson-arm64-android-cross.ini.in
+                   ${CMAKE_BINARY_DIR}/meson-arm64-android-cross.ini @ONLY)
+    set(DXVK_MESON_MACHINE_ARGS --cross-file ${CMAKE_BINARY_DIR}/meson-arm64-android-cross.ini)
+    message(STATUS "DXVK Android build: cross-file ${CMAKE_BINARY_DIR}/meson-arm64-android-cross.ini")
   else()
     set(DXVK_MESON_MACHINE_ARGS --native-file ${CMAKE_SOURCE_DIR}/cmake/meson-arm64-native.ini)
   endif()
 
+  # GeneralsX-Android @build generals-android 11/07/2026
   # Generate a pkg-config file for the in-tree (FetchContent) SDL3 so meson's
   # dependency('SDL3') resolves to it. Without this, meson silently falls back to a
   # system SDL2 (e.g. Homebrew) and compiles the WSI as Sdl2WsiDriver, which cannot
   # drive the SDL3 window the game creates (D3D device creation then fails at runtime).
+  # GeneralsX-Android @build generals-android 11/07/2026 moved ABOVE the platform-
+  # variables block so DXVK_PKG_CONFIG_ENV is defined before DXVK_MESON_ENV uses it.
   set(DXVK_SDL3_PC_DIR "${CMAKE_BINARY_DIR}/sdl3-pkgconfig")
   file(WRITE "${DXVK_SDL3_PC_DIR}/sdl3.pc"
 "prefix=${CMAKE_BINARY_DIR}/_deps
@@ -183,8 +211,55 @@ Cflags: -I\${includedir}
     set(DXVK_PKG_CONFIG_PATH "${DXVK_SDL3_PC_DIR}")
   endif()
   set(DXVK_PKG_CONFIG_ENV "PKG_CONFIG_PATH=${DXVK_PKG_CONFIG_PATH}")
+  # GeneralsX-Android @bugfix generals-android 11/07/2026 DXVK's meson.build calls
+  # dependency('SDL3') (uppercase); pkg-config is case-sensitive on the .pc filename,
+  # so provide SDL3.pc as an alias to sdl3.pc. (macOS finds SDL3 via CMake; cross-
+  # builds fall back to pkg-config and need the uppercase file.)
+  file(CREATE_LINK sdl3.pc "${DXVK_SDL3_PC_DIR}/SDL3.pc" SYMBOLIC)
+
+  # Platform-specific DXVK outputs + meson configure env. Apple builds .dylib
+  # with -arch/-mcpu flags and a VULKAN_SDK env; Android builds .so where the
+  # cross-file already supplies compiler/sysroot, so no extra CFLAGS/CXXFLAGS.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set(DXVK_LIB_EXT "so")
+    set(DXVK_D3D8_LIB  "${DXVK_BUILD_DIR}/src/d3d8/libdxvk_d3d8.${DXVK_LIB_EXT}")
+    set(DXVK_D3D9_LIB  "${DXVK_BUILD_DIR}/src/d3d9/libdxvk_d3d9.${DXVK_LIB_EXT}")
+    set(DXVK_MESON_ENV ${CMAKE_COMMAND} -E env "${DXVK_PKG_CONFIG_ENV}"
+        CC=${NDK_TOOLCHAIN_BIN}/aarch64-linux-android${ANDROID_API}-clang
+        CXX=${NDK_TOOLCHAIN_BIN}/aarch64-linux-android${ANDROID_API}-clang++)
+    set(DXVK_BUILD_TARGETS "src/d3d9/libdxvk_d3d9.${DXVK_LIB_EXT}" "src/d3d8/libdxvk_d3d8.${DXVK_LIB_EXT}")
+  else()
+    set(DXVK_LIB_EXT "dylib")
+    set(DXVK_D3D8_LIB  "${DXVK_BUILD_DIR}/src/d3d8/libdxvk_d3d8.0.${DXVK_LIB_EXT}")
+    set(DXVK_D3D9_LIB  "${DXVK_BUILD_DIR}/src/d3d9/libdxvk_d3d9.0.${DXVK_LIB_EXT}")
+    set(DXVK_BUILD_TARGETS "src/d3d9/libdxvk_d3d9.0.${DXVK_LIB_EXT}" "src/d3d8/libdxvk_d3d8.0.${DXVK_LIB_EXT}")
+    set(DXVK_MESON_ENV ${CMAKE_COMMAND} -E env CC=clang CXX=clang++
+        "CFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1"
+        "CXXFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1"
+        "LDFLAGS=-arch ${DXVK_HOST_ARCH}"
+        "${DXVK_PKG_CONFIG_ENV}" ${VULKAN_SDK_ENV_VAR})
+  endif()
 
   if(SAGE_DXVK_USE_LOCAL_FORK AND EXISTS "${DXVK_LOCAL_FORK_DIR}/.git")
+    # GeneralsX-Android @build generals-android 11/07/2026 Android needs the same idempotent
+    # patch treatment as iOS (see Patches/dxvk-android.patch).
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+      execute_process(
+        COMMAND git -C "${DXVK_LOCAL_FORK_DIR}" apply --reverse --check "${CMAKE_SOURCE_DIR}/Patches/dxvk-android.patch"
+        RESULT_VARIABLE DXVK_ANDROID_PATCH_ALREADY
+        ERROR_QUIET)
+      if(NOT DXVK_ANDROID_PATCH_ALREADY EQUAL 0)
+        execute_process(
+          COMMAND git -C "${DXVK_LOCAL_FORK_DIR}" apply "${CMAKE_SOURCE_DIR}/Patches/dxvk-android.patch"
+          RESULT_VARIABLE DXVK_ANDROID_PATCH_RESULT)
+        if(NOT DXVK_ANDROID_PATCH_RESULT EQUAL 0)
+          message(FATAL_ERROR "Failed to apply Patches/dxvk-android.patch to references/fbraz3-dxvk")
+        endif()
+        message(STATUS "DXVK Android: applied Patches/dxvk-android.patch")
+      else()
+        message(STATUS "DXVK Android: Patches/dxvk-android.patch already applied")
+      endif()
+    endif()
     ExternalProject_Add(dxvk_macos_build
       # GeneralsX @build BenderAI 13/03/2026 Build from local fbraz3 fork to avoid stale remote hash pins.
       SOURCE_DIR        ${DXVK_SOURCE_DIR}
@@ -192,8 +267,8 @@ Cflags: -I\${includedir}
       DOWNLOAD_COMMAND  ""
       UPDATE_COMMAND    ""
       PATCH_COMMAND     ""
-      CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env CC=clang CXX=clang++ "CFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1" "CXXFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1" "LDFLAGS=-arch ${DXVK_HOST_ARCH}" "${DXVK_PKG_CONFIG_ENV}" ${VULKAN_SDK_ENV_VAR} ${MESON_EXECUTABLE} setup ${DXVK_BUILD_DIR} ${DXVK_SOURCE_DIR} ${DXVK_MESON_MACHINE_ARGS} -Ddxvk_native_wsi=sdl3 --buildtype=release --reconfigure
-      BUILD_COMMAND     ${NINJA_EXECUTABLE} -C ${DXVK_BUILD_DIR} src/d3d9/libdxvk_d3d9.0.dylib src/d3d8/libdxvk_d3d8.0.dylib
+      CONFIGURE_COMMAND ${DXVK_MESON_ENV} ${MESON_EXECUTABLE} setup ${DXVK_BUILD_DIR} ${DXVK_SOURCE_DIR} ${DXVK_MESON_MACHINE_ARGS} -Ddxvk_native_wsi=sdl3 --buildtype=release --reconfigure
+      BUILD_COMMAND     ${NINJA_EXECUTABLE} -C ${DXVK_BUILD_DIR} ${DXVK_BUILD_TARGETS}
       INSTALL_COMMAND   ""
       UPDATE_DISCONNECTED TRUE
     )
@@ -209,8 +284,8 @@ Cflags: -I\${includedir}
       SOURCE_DIR        ${DXVK_SOURCE_DIR}
       BINARY_DIR        ${DXVK_BUILD_DIR}
       PATCH_COMMAND     ""
-      CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env CC=clang CXX=clang++ "CFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1" "CXXFLAGS=-arch ${DXVK_HOST_ARCH} -mcpu=apple-m1" "LDFLAGS=-arch ${DXVK_HOST_ARCH}" "${DXVK_PKG_CONFIG_ENV}" ${VULKAN_SDK_ENV_VAR} ${MESON_EXECUTABLE} setup ${DXVK_BUILD_DIR} ${DXVK_SOURCE_DIR} ${DXVK_MESON_MACHINE_ARGS} -Ddxvk_native_wsi=sdl3 --buildtype=release --reconfigure
-      BUILD_COMMAND     ${NINJA_EXECUTABLE} -C ${DXVK_BUILD_DIR} src/d3d9/libdxvk_d3d9.0.dylib src/d3d8/libdxvk_d3d8.0.dylib
+      CONFIGURE_COMMAND ${DXVK_MESON_ENV} ${MESON_EXECUTABLE} setup ${DXVK_BUILD_DIR} ${DXVK_SOURCE_DIR} ${DXVK_MESON_MACHINE_ARGS} -Ddxvk_native_wsi=sdl3 --buildtype=release --reconfigure
+      BUILD_COMMAND     ${NINJA_EXECUTABLE} -C ${DXVK_BUILD_DIR} ${DXVK_BUILD_TARGETS}
       INSTALL_COMMAND   ""
       UPDATE_DISCONNECTED FALSE
     )
@@ -218,6 +293,23 @@ Cflags: -I\${includedir}
 
   # Copy libdxvk_d3d9 + libdxvk_d3d8 to build dir and create unversioned symlinks.
   # d3d8 links against d3d9 via @rpath, so both must be present at runtime.
+  # GeneralsX-Android @build generals-android 11/07/2026 Android: .so, no versioned suffix.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    add_custom_command(
+      OUTPUT  "${CMAKE_BINARY_DIR}/libdxvk_d3d9.${DXVK_LIB_EXT}"
+              "${CMAKE_BINARY_DIR}/libdxvk_d3d8.${DXVK_LIB_EXT}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${DXVK_D3D9_LIB} "${CMAKE_BINARY_DIR}/libdxvk_d3d9.${DXVK_LIB_EXT}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${DXVK_D3D8_LIB} "${CMAKE_BINARY_DIR}/libdxvk_d3d8.${DXVK_LIB_EXT}"
+      DEPENDS dxvk_macos_build
+      COMMENT "Installing libdxvk_d3d8 + libdxvk_d3d9 to build directory"
+    )
+    add_custom_target(dxvk_d3d8_install ALL
+      DEPENDS "${CMAKE_BINARY_DIR}/libdxvk_d3d8.${DXVK_LIB_EXT}"
+              "${CMAKE_BINARY_DIR}/libdxvk_d3d9.${DXVK_LIB_EXT}"
+    )
+  else()
   add_custom_command(
     OUTPUT  "${CMAKE_BINARY_DIR}/libdxvk_d3d9.0.dylib"
             "${CMAKE_BINARY_DIR}/libdxvk_d3d8.0.dylib"
@@ -236,6 +328,7 @@ Cflags: -I\${includedir}
     DEPENDS "${CMAKE_BINARY_DIR}/libdxvk_d3d8.0.dylib"
             "${CMAKE_BINARY_DIR}/libdxvk_d3d9.0.dylib"
   )
+  endif()
 
   # Export path so other cmake files know where the headers are
   set(DXVK_INCLUDE_DIR "${DXVK_SOURCE_DIR}/include/native" CACHE PATH "DXVK native headers")
