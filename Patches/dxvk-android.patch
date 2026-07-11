@@ -1,3 +1,348 @@
+diff --git a/src/d3d8/d3d8_device.cpp b/src/d3d8/d3d8_device.cpp
+index 8ef95630..f19965a2 100644
+--- a/src/d3d8/d3d8_device.cpp
++++ b/src/d3d8/d3d8_device.cpp
+@@ -575,7 +575,7 @@ namespace dxvk {
+     HRESULT res = D3D_OK;
+     D3DLOCKED_RECT srcLocked, dstLocked;
+ 
+-    bool compressed = isDXT(srcDesc.Format);
++    bool compressed = isDXT(srcDesc.Format) || isASTC66(srcDesc.Format);
+ 
+     res = src->LockRect(&srcLocked, &srcRect, D3DLOCK_READONLY);
+     if (unlikely(FAILED(res)))
+@@ -605,13 +605,18 @@ namespace dxvk {
+       // Bytes per row of the rect
+       auto amplitude = cols * bpp;
+ 
+-      // Handle DXT compressed textures.
++      // Handle block compressed textures.
+       if (compressed) {
+-        // DXT blocks are always 4x4 pixels.
+-        constexpr UINT blockWidth  = 4;
+-        constexpr UINT blockHeight = 4;
++        // Block size depends on the format.
++        UINT blockWidth  = 4;
++        UINT blockHeight = 4;
+ 
+-        // Compute rect dimensions in 4x4 blocks
++        if (isASTC66(srcDesc.Format)) {
++          blockWidth  = 6;
++          blockHeight = 6;
++        }
++
++        // Compute rect dimensions in blocks
+         UINT rectWidthBlocks  = cols / blockWidth;
+         UINT rectHeightBlocks = rows / blockHeight;
+ 
+@@ -620,7 +625,7 @@ namespace dxvk {
+         UINT texWidthBlocks = std::max(srcDesc.Width / blockWidth, 1u);
+         UINT bytesPerBlock  = srcLocked.Pitch / texWidthBlocks;
+ 
+-        // Copy H/4 rows of W/4 blocks
++        // Copy H/blockHeight rows of W/blockWidth blocks
+         amplitude = rectWidthBlocks * bytesPerBlock;
+         rows      = rectHeightBlocks;
+       }
+@@ -1743,9 +1748,10 @@ namespace dxvk {
+ 
+         return GetD3D9()->SetSoftwareVertexProcessing(Value);
+ 
+-      // TODO: Implement D3DRS_PATCHSEGMENTS
++      // PATCHSEGMENTS only affects unsupported high-order patch primitives.
++      // Generals redundantly sets this state during normal rendering, so avoid
++      // emitting a warning on every call and stalling Android's render thread.
+       case D3DRS_PATCHSEGMENTS:
+-        Logger::warn("D3D8Device::SetRenderState: Unimplemented render state D3DRS_PATCHSEGMENTS");
+         m_patchSegments = bit::cast<float>(Value);
+         return D3D_OK;
+     }
+diff --git a/src/d3d8/d3d8_format.h b/src/d3d8/d3d8_format.h
+index ee8e2776..187622bd 100644
+--- a/src/d3d8/d3d8_format.h
++++ b/src/d3d8/d3d8_format.h
+@@ -4,6 +4,8 @@
+ 
+ namespace dxvk {
+ 
++  constexpr D3DFORMAT D3DFMT_AS66 = D3DFORMAT(MAKEFOURCC('A','S','6','6'));
++
+   constexpr bool isDXT(D3DFORMAT fmt) {
+     return fmt == D3DFMT_DXT1
+         || fmt == D3DFMT_DXT2
+@@ -16,6 +18,14 @@ namespace dxvk {
+     return isDXT(D3DFORMAT(fmt));
+   }
+ 
++  constexpr bool isASTC66(D3DFORMAT fmt) {
++    return fmt == D3DFMT_AS66;
++  }
++
++  constexpr bool isASTC66(d3d9::D3DFORMAT fmt) {
++    return isASTC66(D3DFORMAT(fmt));
++  }
++
+   constexpr bool isUnsupportedSurfaceFormat(D3DFORMAT fmt) {
+     // mirror what dxvk doesn't support in terms of d3d9 surface formats
+     return fmt == D3DFMT_R8G8B8
+@@ -100,6 +110,7 @@ namespace dxvk {
+       case D3DFMT_DXT3:
+       case D3DFMT_DXT4:
+       case D3DFMT_DXT5:
++      case D3DFMT_AS66:
+         return 16;
+     }
+   }
+@@ -213,6 +224,9 @@ namespace dxvk {
+     if (isDXT(Format)) {
+       Width = ((Width + 3) >> 2);
+       Height = ((Height + 3) >> 2);
++    } else if (isASTC66(Format)) {
++      Width  = (Width  + 5) / 6;
++      Height = (Height + 5) / 6;
+     }
+     return Width * Height * getFormatStride(Format);
+   }
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 4313f6a4..a1a6b1de 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4550,8 +4550,13 @@ namespace dxvk {
+     enabled.core.features.shaderClipDistance = VK_TRUE;
+     enabled.core.features.shaderCullDistance = VK_TRUE;
+ 
+-    // Ensure we support real BC formats and unofficial vendor ones.
+-    enabled.core.features.textureCompressionBC = VK_TRUE;
++    // Enable the compressed formats exposed by the Vulkan device. Android
++    // hardware commonly supports ETC2/ASTC but not desktop BC formats; the
++    // private AS66 D3D format relies on ASTC LDR being enabled at VkDevice
++    // creation time.
++    enabled.core.features.textureCompressionETC2 = supported.core.features.textureCompressionETC2;
++    enabled.core.features.textureCompressionASTC_LDR = supported.core.features.textureCompressionASTC_LDR;
++    enabled.core.features.textureCompressionBC = supported.core.features.textureCompressionBC;
+ 
+     // SM2 level hardware
+     enabled.core.features.occlusionQueryPrecise = VK_TRUE;
+diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
+index a3af1866..1ce56ea9 100644
+--- a/src/d3d9/d3d9_format.cpp
++++ b/src/d3d9/d3d9_format.cpp
+@@ -433,6 +433,11 @@ namespace dxvk {
+ 
+       case D3D9Format::AL16: return {}; // Unsupported
+ 
++      case D3D9Format::AS66: return {
++        VK_FORMAT_ASTC_6x6_UNORM_BLOCK,
++        VK_FORMAT_ASTC_6x6_SRGB_BLOCK,
++        VK_IMAGE_ASPECT_COLOR_BIT };
++
+       default:
+         Logger::warn(str::format("ConvertFormat: Unknown format encountered: ", Format));
+         return {}; // Unsupported
+@@ -451,6 +456,9 @@ namespace dxvk {
+       case D3D9Format::ATI2:
+         return { 4, 4, 1 };
+ 
++      case D3D9Format::AS66:
++        return { 6, 6, 1 };
++
+       case D3D9Format::YUY2:
+       case D3D9Format::UYVY:
+         return { 2, 1, 1 };
+diff --git a/src/d3d9/d3d9_format.h b/src/d3d9/d3d9_format.h
+index 43d26553..40983a44 100644
+--- a/src/d3d9/d3d9_format.h
++++ b/src/d3d9/d3d9_format.h
+@@ -120,6 +120,9 @@ namespace dxvk {
+     FXT1 = MAKEFOURCC('F', 'X', 'T', '1'),
+     GXT1 = MAKEFOURCC('G', 'X', 'T', '1'),
+     HXT1 = MAKEFOURCC('H', 'X', 'T', '1'),
++
++    // Private ASTC formats (NV_generic, also used by Blizzard games)
++    AS66 = MAKEFOURCC('A', 'S', '6', '6'),
+   };
+ 
+   inline D3D9Format EnumerateFormat(D3DFORMAT format) {
+diff --git a/src/dxvk/dxvk_adapter.cpp b/src/dxvk/dxvk_adapter.cpp
+index 981b0003..1fe8ddae 100644
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -473,6 +473,13 @@ namespace dxvk {
+     enabledFeatures.extRobustness2.robustBufferAccess2 = VK_FALSE;
+     enabledFeatures.extRobustness2.robustImageAccess2 = VK_FALSE;
+     enabledFeatures.extRobustness2.nullDescriptor = VK_FALSE;
++#elif defined(__ANDROID__)
++    // Mali-G615 advertises nullDescriptor but crashes in vkUpdateDescriptorSets
++    // when a combined image sampler contains a null image view. Use the proven
++    // DXVK-Sarek dummy-resource path on Android instead.
++    enabledFeatures.extRobustness2.robustBufferAccess2 = m_deviceFeatures.extRobustness2.robustBufferAccess2;
++    enabledFeatures.extRobustness2.robustImageAccess2 = m_deviceFeatures.extRobustness2.robustImageAccess2;
++    enabledFeatures.extRobustness2.nullDescriptor = VK_FALSE;
+ #else
+     enabledFeatures.extRobustness2.robustBufferAccess2 = VK_TRUE;
+     enabledFeatures.extRobustness2.robustImageAccess2 = m_deviceFeatures.extRobustness2.robustImageAccess2;
+@@ -606,7 +613,9 @@ namespace dxvk {
+     queues.transfer = getDeviceQueue(vkd, queueFamilies.transfer, 0);
+     queues.sparse = getDeviceQueue(vkd, queueFamilies.sparse, 0);
+ 
+-    return new DxvkDevice(instance, this, vkd, enabledFeatures, queues, DxvkQueueCallback());
++    Rc<DxvkDevice> result = new DxvkDevice(instance, this, vkd, enabledFeatures, queues, DxvkQueueCallback());
++    result->initResources();
++    return result;
+   }
+ 
+ 
+@@ -756,7 +765,9 @@ namespace dxvk {
+     queues.graphics = { args.queue, args.queueFamily };
+     queues.transfer = queues.graphics;
+ 
+-    return new DxvkDevice(instance, this, vkd, enabledFeatures, queues, args.queueCallback);
++    Rc<DxvkDevice> result = new DxvkDevice(instance, this, vkd, enabledFeatures, queues, args.queueCallback);
++    result->initResources();
++    return result;
+   }
+ 
+ 
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index e3d2a92d..b5e5df4e 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -6132,10 +6132,13 @@ namespace dxvk {
+ 
+                 m_cmd->track(view->image(), DxvkAccess::Read);
+               }
+-            } else {
++            } else if (m_device->features().extRobustness2.nullDescriptor) {
+               descriptorInfo.image.sampler = VK_NULL_HANDLE;
+               descriptorInfo.image.imageView = VK_NULL_HANDLE;
+               descriptorInfo.image.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++            } else {
++              descriptorInfo.image = m_common->dummyResources()
++                .imageViewDescriptor(binding.viewType, true);
+             }
+           } break;
+ 
+@@ -6157,10 +6160,13 @@ namespace dxvk {
+ 
+               m_cmd->track(res.imageView->image(), (binding.access & vk::AccessWriteMask)
+                 ? DxvkAccess::Write : DxvkAccess::Read);
+-            } else {
++            } else if (m_device->features().extRobustness2.nullDescriptor) {
+               descriptorInfo.image.sampler = VK_NULL_HANDLE;
+               descriptorInfo.image.imageView = VK_NULL_HANDLE;
+               descriptorInfo.image.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++            } else {
++              descriptorInfo.image = m_common->dummyResources()
++                .imageViewDescriptor(binding.viewType, false);
+             }
+           } break;
+ 
+@@ -6193,10 +6199,13 @@ namespace dxvk {
+                 m_cmd->track(view->image(), DxvkAccess::Read);
+                 m_cmd->track(res.sampler);
+               }
+-            } else {
++            } else if (m_device->features().extRobustness2.nullDescriptor) {
+               descriptorInfo.image.sampler = m_common->dummyResources().samplerHandle();
+               descriptorInfo.image.imageView = VK_NULL_HANDLE;
+               descriptorInfo.image.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++            } else {
++              descriptorInfo.image = m_common->dummyResources()
++                .imageSamplerDescriptor(binding.viewType);
+             }
+           } break;
+ 
+@@ -6211,7 +6220,9 @@ namespace dxvk {
+ 
+               m_cmd->track(res.bufferView->buffer(), DxvkAccess::Read);
+             } else {
+-              descriptorInfo.texelBuffer = VK_NULL_HANDLE;
++              descriptorInfo.texelBuffer = m_device->features().extRobustness2.nullDescriptor
++                ? VK_NULL_HANDLE
++                : m_common->dummyResources().bufferViewDescriptor();
+             }
+           } break;
+ 
+@@ -6227,7 +6238,9 @@ namespace dxvk {
+               m_cmd->track(res.bufferView->buffer(), (binding.access & vk::AccessWriteMask)
+                 ? DxvkAccess::Write : DxvkAccess::Read);
+             } else {
+-              descriptorInfo.texelBuffer = VK_NULL_HANDLE;
++              descriptorInfo.texelBuffer = m_device->features().extRobustness2.nullDescriptor
++                ? VK_NULL_HANDLE
++                : m_common->dummyResources().bufferViewDescriptor();
+             }
+           } break;
+ 
+@@ -6241,10 +6254,12 @@ namespace dxvk {
+                 accessBuffer(DxvkCmdBuffer::ExecBuffer, res.bufferSlice, util::pipelineStages(binding.stage), binding.access, DxvkAccessOp::None);
+ 
+               m_cmd->track(res.bufferSlice.buffer(), DxvkAccess::Read);
+-            } else {
++            } else if (m_device->features().extRobustness2.nullDescriptor) {
+               descriptorInfo.buffer.buffer = VK_NULL_HANDLE;
+               descriptorInfo.buffer.offset = 0;
+               descriptorInfo.buffer.range = VK_WHOLE_SIZE;
++            } else {
++              descriptorInfo.buffer = m_common->dummyResources().bufferDescriptor();
+             }
+           } break;
+ 
+@@ -6259,10 +6274,12 @@ namespace dxvk {
+ 
+               m_cmd->track(res.bufferSlice.buffer(), (binding.access & vk::AccessWriteMask)
+                 ? DxvkAccess::Write : DxvkAccess::Read);
+-            } else {
++            } else if (m_device->features().extRobustness2.nullDescriptor) {
+               descriptorInfo.buffer.buffer = VK_NULL_HANDLE;
+               descriptorInfo.buffer.offset = 0;
+               descriptorInfo.buffer.range = VK_WHOLE_SIZE;
++            } else {
++              descriptorInfo.buffer = m_common->dummyResources().bufferDescriptor();
+             }
+           } break;
+ 
+diff --git a/src/dxvk/dxvk_device.cpp b/src/dxvk/dxvk_device.cpp
+index c5090712..f23efb22 100644
+--- a/src/dxvk/dxvk_device.cpp
++++ b/src/dxvk/dxvk_device.cpp
+@@ -27,6 +27,12 @@ namespace dxvk {
+   }
+   
+   
++  void DxvkDevice::initResources() {
++    if (!m_features.extRobustness2.nullDescriptor)
++      m_objects.dummyResources().initResources();
++  }
++
++
+   DxvkDevice::~DxvkDevice() {
+     // If we are being destroyed during/after DLL process detachment
+     // from TerminateProcess, etc, our CS threads are already destroyed
+diff --git a/src/dxvk/dxvk_device.h b/src/dxvk/dxvk_device.h
+index 0a1e622e..2e9e3a2a 100644
+--- a/src/dxvk/dxvk_device.h
++++ b/src/dxvk/dxvk_device.h
+@@ -301,6 +301,19 @@ namespace dxvk {
+      */
+     Rc<DxvkContext> createContext();
+ 
++    /**
++     * \brief Initializes fallback resources
++     *
++     * Must be called after construction when null descriptors are unavailable
++     * or deliberately disabled for a broken driver.
++     */
++    void initResources();
++
++    /** Returns zero-filled descriptor fallback resources. */
++    DxvkUnboundResources& dummyResources() {
++      return m_objects.dummyResources();
++    }
++
+     /**
+      * \brief Creates a GPU event
+      * \returns New GPU event
 diff --git a/src/dxvk/dxvk_extensions.h b/src/dxvk/dxvk_extensions.h
 index aa002a77..cac16df5 100644
 --- a/src/dxvk/dxvk_extensions.h
@@ -11,6 +356,517 @@ index aa002a77..cac16df5 100644
      DxvkExt extShaderModuleIdentifier         = { VK_EXT_SHADER_MODULE_IDENTIFIER_EXTENSION_NAME,           DxvkExtMode::Optional };
      DxvkExt extShaderStencilExport            = { VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,              DxvkExtMode::Optional };
      DxvkExt extSwapchainColorSpace            = { VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME,              DxvkExtMode::Optional };
+diff --git a/src/dxvk/dxvk_format.cpp b/src/dxvk/dxvk_format.cpp
+index 674da9b3..e2592bd6 100644
+--- a/src/dxvk/dxvk_format.cpp
++++ b/src/dxvk/dxvk_format.cpp
+@@ -541,6 +541,18 @@ namespace dxvk {
+         DxvkFormatFlag::ColorSpaceSrgb),
+       VkExtent3D { 4, 4, 1 } },
+     
++    // VK_FORMAT_ASTC_6x6_UNORM_BLOCK
++    { 16, RGBA, VK_IMAGE_ASPECT_COLOR_BIT,
++      DxvkFormatFlag::BlockCompressed,
++      VkExtent3D { 6, 6, 1 } },
++
++    // VK_FORMAT_ASTC_6x6_SRGB_BLOCK
++    { 16, RGBA, VK_IMAGE_ASPECT_COLOR_BIT,
++      DxvkFormatFlags(
++        DxvkFormatFlag::BlockCompressed,
++        DxvkFormatFlag::ColorSpaceSrgb),
++      VkExtent3D { 6, 6, 1 } },
++
+     // VK_FORMAT_G8B8G8R8_422_UNORM_KHR
+     { 4, RGB, VK_IMAGE_ASPECT_COLOR_BIT,
+       DxvkFormatFlag::BlockCompressed,
+@@ -578,8 +590,9 @@ namespace dxvk {
+   }};
+   
+   
+-  const std::array<std::pair<VkFormat, VkFormat>, 5> g_formatGroups = {{
++  const std::array<std::pair<VkFormat, VkFormat>, 6> g_formatGroups = {{
+     { VK_FORMAT_UNDEFINED,                  VK_FORMAT_BC7_SRGB_BLOCK            },
++    { VK_FORMAT_ASTC_6x6_UNORM_BLOCK,        VK_FORMAT_ASTC_6x6_SRGB_BLOCK       },
+     { VK_FORMAT_G8B8G8R8_422_UNORM_KHR,     VK_FORMAT_B8G8R8G8_422_UNORM_KHR    },
+     { VK_FORMAT_A4R4G4B4_UNORM_PACK16,      VK_FORMAT_A4B4G4R4_UNORM_PACK16     },
+     { VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM,  VK_FORMAT_G8_B8R8_2PLANE_420_UNORM  },
+diff --git a/src/dxvk/dxvk_format.h b/src/dxvk/dxvk_format.h
+index fcdadb74..caecf6ff 100644
+--- a/src/dxvk/dxvk_format.h
++++ b/src/dxvk/dxvk_format.h
+@@ -87,7 +87,7 @@ namespace dxvk {
+   };
+ 
+   /// Number of formats defined in lookup table  
+-  constexpr size_t DxvkFormatCount = 155;
++  constexpr size_t DxvkFormatCount = 157;
+ 
+   /// Format lookup table
+   extern const std::array<DxvkFormatInfo, DxvkFormatCount> g_formatInfos;
+diff --git a/src/dxvk/dxvk_presenter.cpp b/src/dxvk/dxvk_presenter.cpp
+index 38b8a2d6..ab5b81ea 100644
+--- a/src/dxvk/dxvk_presenter.cpp
++++ b/src/dxvk/dxvk_presenter.cpp
+@@ -102,6 +102,13 @@ namespace dxvk {
+       m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+         m_swapchain, std::numeric_limits<uint64_t>::max(),
+         sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
++#if defined(__ANDROID__)
++      // Some Android WSI implementations report SUBOPTIMAL indefinitely even
++      // when the surface extent is stable. It remains legal to present, and
++      // recreating the swapchain every frame causes catastrophic stutter.
++      if (m_acquireStatus == VK_SUBOPTIMAL_KHR)
++        m_acquireStatus = VK_SUCCESS;
++#endif
+     }
+ 
+     // This is a normal occurence, but may be useful for
+@@ -126,6 +133,10 @@ namespace dxvk {
+       m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+         m_swapchain, std::numeric_limits<uint64_t>::max(),
+         sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
++#if defined(__ANDROID__)
++      if (m_acquireStatus == VK_SUBOPTIMAL_KHR)
++        m_acquireStatus = VK_SUCCESS;
++#endif
+ 
+       if (m_acquireStatus < 0) {
+         Logger::info(str::format("Presenter: Got ", m_acquireStatus, " from fresh swapchain"));
+@@ -200,6 +211,13 @@ namespace dxvk {
+     VkResult status = m_vkd->vkQueuePresentKHR(
+       m_device->queues().graphics.queueHandle, &info);
+ 
++#if defined(__ANDROID__)
++    // Continuing to use a suboptimal swapchain is explicitly permitted. Mali
++    // may return this persistently for Android compositor-managed surfaces.
++    if (status == VK_SUBOPTIMAL_KHR)
++      status = VK_SUCCESS;
++#endif
++
+     // Maintain valid state if presentation succeeded, even if we want to
+     // recreate the swapchain. Spec says that 'queue' operations, i.e. the
+     // semaphore and fence signals, still happen if present fails with
+@@ -239,6 +257,10 @@ namespace dxvk {
+       m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+         m_swapchain, std::numeric_limits<uint64_t>::max(),
+         nextSync.acquire, VK_NULL_HANDLE, &m_imageIndex);
++#if defined(__ANDROID__)
++      if (m_acquireStatus == VK_SUBOPTIMAL_KHR)
++        m_acquireStatus = VK_SUCCESS;
++#endif
+     }
+ 
+     // Recreate the swapchain on the next acquire, even if we get suboptimal.
+diff --git a/src/dxvk/dxvk_swapchain_blitter.cpp b/src/dxvk/dxvk_swapchain_blitter.cpp
+index 044c3eab..8eb00258 100644
+--- a/src/dxvk/dxvk_swapchain_blitter.cpp
++++ b/src/dxvk/dxvk_swapchain_blitter.cpp
+@@ -331,6 +331,12 @@ namespace dxvk {
+     VkDescriptorImageInfo gammaDescriptor = { };
+     gammaDescriptor.sampler = m_samplerGamma->handle();
+ 
++    if (!m_device->features().extRobustness2.nullDescriptor) {
++      gammaDescriptor = m_device->dummyResources()
++        .imageSamplerDescriptor(VK_IMAGE_VIEW_TYPE_2D);
++      gammaDescriptor.sampler = m_samplerGamma->handle();
++    }
++
+     if (m_gammaView) {
+       gammaDescriptor.imageView = m_gammaView->handle();
+       gammaDescriptor.imageLayout = m_gammaView->image()->info().layout;
+@@ -338,6 +344,10 @@ namespace dxvk {
+ 
+     VkDescriptorImageInfo hudDescriptor = { };
+ 
++    if (!m_device->features().extRobustness2.nullDescriptor)
++      hudDescriptor = m_device->dummyResources()
++        .imageViewDescriptor(VK_IMAGE_VIEW_TYPE_2D, true);
++
+     if (m_hudView) {
+       hudDescriptor.imageView = m_hudView->handle();
+       hudDescriptor.imageLayout = m_hudImage->info().layout;
+@@ -346,6 +356,12 @@ namespace dxvk {
+     VkDescriptorImageInfo cursorDescriptor = { };
+     cursorDescriptor.sampler = m_samplerCursorNearest->handle();
+ 
++    if (!m_device->features().extRobustness2.nullDescriptor) {
++      cursorDescriptor = m_device->dummyResources()
++        .imageSamplerDescriptor(VK_IMAGE_VIEW_TYPE_2D);
++      cursorDescriptor.sampler = m_samplerCursorNearest->handle();
++    }
++
+     if (m_cursorView) {
+       VkExtent3D extent = m_cursorImage->info().extent;
+ 
+diff --git a/src/dxvk/dxvk_unbound.cpp b/src/dxvk/dxvk_unbound.cpp
+index 63e3f4d5..ec7ba51c 100644
+--- a/src/dxvk/dxvk_unbound.cpp
++++ b/src/dxvk/dxvk_unbound.cpp
+@@ -1,15 +1,48 @@
++#include "dxvk_context.h"
+ #include "dxvk_device.h"
+ 
+ namespace dxvk {
+-  
++
+   DxvkUnboundResources::DxvkUnboundResources(DxvkDevice* dev)
+   : m_device(dev) {
+ 
+   }
+-  
+-  
++
++
+   DxvkUnboundResources::~DxvkUnboundResources() {
+-    
++
++  }
++
++
++  void DxvkUnboundResources::initResources() {
++    std::lock_guard lock(m_mutex);
++
++    if (m_image2D)
++      return;
++
++    m_sampler = createSampler();
++    m_samplerHandle.store(m_sampler->handle(), std::memory_order_release);
++
++    m_buffer = createBuffer();
++    m_bufferHandle.store(m_buffer->getSliceHandle().handle, std::memory_order_release);
++    m_bufferView = createBufferView(m_buffer);
++
++    m_image1D = createImage(VK_IMAGE_TYPE_1D, 1);
++    m_image2D = createImage(VK_IMAGE_TYPE_2D, 6);
++    m_image3D = createImage(VK_IMAGE_TYPE_3D, 1);
++
++    m_viewsSampled = createImageViews(VK_FORMAT_R32_SFLOAT, true);
++    m_viewsStorage = createImageViews(VK_FORMAT_R32_UINT, false);
++
++    const Rc<DxvkContext> ctx = m_device->createContext();
++    ctx->beginRecording(m_device->createCommandList());
++    ctx->initImage(m_image1D, m_image1D->getAvailableSubresources(), VK_IMAGE_LAYOUT_UNDEFINED);
++    ctx->initImage(m_image2D, m_image2D->getAvailableSubresources(), VK_IMAGE_LAYOUT_UNDEFINED);
++    ctx->initImage(m_image3D, m_image3D->getAvailableSubresources(), VK_IMAGE_LAYOUT_UNDEFINED);
++
++    m_device->submitCommandList(
++      ctx->endRecording(nullptr),
++      nullptr, 0, nullptr);
+   }
+ 
+ 
+@@ -33,6 +66,31 @@ namespace dxvk {
+   }
+ 
+ 
++  VkDescriptorBufferInfo DxvkUnboundResources::bufferDescriptor() {
++    VkDescriptorBufferInfo result;
++    result.buffer = bufferHandle();
++    result.offset = 0;
++    result.range = MaxUniformBufferSize;
++    return result;
++  }
++
++
++  VkBufferView DxvkUnboundResources::bufferViewDescriptor() {
++    if (unlikely(!m_bufferView)) {
++      std::lock_guard lock(m_mutex);
++      if (!m_bufferView) {
++        if (!m_buffer) {
++          m_buffer = createBuffer();
++          m_bufferHandle.store(m_buffer->getSliceHandle().handle, std::memory_order_release);
++        }
++        m_bufferView = createBufferView(m_buffer);
++      }
++    }
++
++    return m_bufferView->handle();
++  }
++
++
+   VkSampler DxvkUnboundResources::samplerHandle() {
+     VkSampler sampler = m_samplerHandle.load();
+ 
+@@ -53,6 +111,26 @@ namespace dxvk {
+   }
+ 
+ 
++  VkDescriptorImageInfo DxvkUnboundResources::imageViewDescriptor(
++          VkImageViewType type,
++          bool            sampled) {
++    DxvkImageView* view = getImageView(type, sampled);
++
++    VkDescriptorImageInfo result;
++    result.sampler = VK_NULL_HANDLE;
++    result.imageView = view->handle();
++    result.imageLayout = view->defaultLayout();
++    return result;
++  }
++
++
++  VkDescriptorImageInfo DxvkUnboundResources::imageSamplerDescriptor(VkImageViewType type) {
++    VkDescriptorImageInfo result = imageViewDescriptor(type, true);
++    result.sampler = samplerHandle();
++    return result;
++  }
++
++
+   Rc<DxvkSampler> DxvkUnboundResources::createSampler() {
+     DxvkSamplerKey info;
+     info.setFilter(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR);
+@@ -65,8 +143,8 @@ namespace dxvk {
+ 
+     return m_device->createSampler(info);
+   }
+-  
+-  
++
++
+   Rc<DxvkBuffer> DxvkUnboundResources::createBuffer() {
+     DxvkBufferCreateInfo info;
+     info.size       = MaxUniformBufferSize;
+@@ -84,7 +162,7 @@ namespace dxvk {
+                     | VK_ACCESS_SHADER_READ_BIT
+                     | VK_ACCESS_SHADER_WRITE_BIT;
+     info.debugName  = "Null buffer";
+-    
++
+     Rc<DxvkBuffer> buffer = m_device->createBuffer(info,
+       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+@@ -93,5 +171,108 @@ namespace dxvk {
+     std::memset(buffer->mapPtr(0), 0, info.size);
+     return buffer;
+   }
+-  
+-}
+\ No newline at end of file
++
++
++  Rc<DxvkBufferView> DxvkUnboundResources::createBufferView(const Rc<DxvkBuffer>& buffer) {
++    DxvkBufferViewKey info = { };
++    info.format = VK_FORMAT_R32_UINT;
++    info.usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT
++               | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
++    info.offset = 0;
++    info.size = buffer->info().size;
++    return buffer->createView(info);
++  }
++
++
++  Rc<DxvkImage> DxvkUnboundResources::createImage(VkImageType type, uint32_t layers) {
++    const std::array<VkFormat, 2> viewFormats = {
++      VK_FORMAT_R32_UINT,
++      VK_FORMAT_R32_SFLOAT,
++    };
++
++    DxvkImageCreateInfo info;
++    info.type = type;
++    info.format = VK_FORMAT_R32_UINT;
++    info.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++    info.sampleCount = VK_SAMPLE_COUNT_1_BIT;
++    info.extent = { 1, 1, 1 };
++    info.numLayers = layers;
++    info.mipLevels = 1;
++    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT
++               | VK_IMAGE_USAGE_SAMPLED_BIT
++               | VK_IMAGE_USAGE_STORAGE_BIT;
++    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT
++                | m_device->getShaderPipelineStages();
++    info.access = VK_ACCESS_SHADER_READ_BIT
++                | VK_ACCESS_SHADER_WRITE_BIT;
++    info.layout = VK_IMAGE_LAYOUT_GENERAL;
++    info.tiling = VK_IMAGE_TILING_OPTIMAL;
++    info.viewFormatCount = viewFormats.size();
++    info.viewFormats = viewFormats.data();
++    info.debugName = "Null image";
++
++    if (type == VK_IMAGE_TYPE_2D)
++      info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
++
++    return m_device->createImage(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
++  }
++
++
++  Rc<DxvkImageView> DxvkUnboundResources::createImageView(
++    const Rc<DxvkImage>& image,
++          VkFormat format,
++          VkImageViewType type,
++          uint32_t layers,
++          bool sampled) {
++    DxvkImageViewKey info = { };
++    info.viewType = type;
++    info.usage = sampled
++      ? VK_IMAGE_USAGE_SAMPLED_BIT
++      : VK_IMAGE_USAGE_STORAGE_BIT;
++    info.format = format;
++    info.aspects = VK_IMAGE_ASPECT_COLOR_BIT;
++    info.mipIndex = 0;
++    info.mipCount = 1;
++    info.layerIndex = 0;
++    info.layerCount = layers;
++    info.packedSwizzle = DxvkImageViewKey::packSwizzle(VkComponentMapping {
++      VK_COMPONENT_SWIZZLE_ZERO,
++      VK_COMPONENT_SWIZZLE_ZERO,
++      VK_COMPONENT_SWIZZLE_ZERO,
++      VK_COMPONENT_SWIZZLE_ZERO });
++    return image->createView(info);
++  }
++
++
++  DxvkUnboundResources::UnboundViews DxvkUnboundResources::createImageViews(
++          VkFormat format,
++          bool     sampled) {
++    UnboundViews result;
++    result.view1D      = createImageView(m_image1D, format, VK_IMAGE_VIEW_TYPE_1D,         1, sampled);
++    result.view1DArr   = createImageView(m_image1D, format, VK_IMAGE_VIEW_TYPE_1D_ARRAY,   1, sampled);
++    result.view2D      = createImageView(m_image2D, format, VK_IMAGE_VIEW_TYPE_2D,         1, sampled);
++    result.view2DArr   = createImageView(m_image2D, format, VK_IMAGE_VIEW_TYPE_2D_ARRAY,   1, sampled);
++    result.viewCube    = createImageView(m_image2D, format, VK_IMAGE_VIEW_TYPE_CUBE,       6, sampled);
++    result.viewCubeArr = createImageView(m_image2D, format, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, 6, sampled);
++    result.view3D      = createImageView(m_image3D, format, VK_IMAGE_VIEW_TYPE_3D,         1, sampled);
++    return result;
++  }
++
++
++  DxvkImageView* DxvkUnboundResources::getImageView(VkImageViewType type, bool sampled) {
++    UnboundViews* views = sampled ? &m_viewsSampled : &m_viewsStorage;
++
++    switch (type) {
++      case VK_IMAGE_VIEW_TYPE_1D:         return views->view1D.ptr();
++      case VK_IMAGE_VIEW_TYPE_1D_ARRAY:   return views->view1DArr.ptr();
++      case VK_IMAGE_VIEW_TYPE_MAX_ENUM:
++      case VK_IMAGE_VIEW_TYPE_2D:         return views->view2D.ptr();
++      case VK_IMAGE_VIEW_TYPE_2D_ARRAY:   return views->view2DArr.ptr();
++      case VK_IMAGE_VIEW_TYPE_CUBE:       return views->viewCube.ptr();
++      case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY: return views->viewCubeArr.ptr();
++      case VK_IMAGE_VIEW_TYPE_3D:         return views->view3D.ptr();
++      default:                            return views->view2D.ptr();
++    }
++  }
++
++}
+diff --git a/src/dxvk/dxvk_unbound.h b/src/dxvk/dxvk_unbound.h
+index 9caa9fd8..b94ea487 100644
+--- a/src/dxvk/dxvk_unbound.h
++++ b/src/dxvk/dxvk_unbound.h
+@@ -9,43 +9,55 @@
+ namespace dxvk {
+ 
+   class DxvkContext;
+-  
++
+   /**
+    * \brief Unbound resources
+-   * 
+-   * Creates dummy resources that will be used
+-   * for descriptor sets when the client API did
+-   * not bind a compatible resource to a slot.
++   *
++   * Creates zero-filled dummy resources for APIs which cannot safely use
++   * null descriptors. Modern desktop DXVK normally relies on
++   * VK_EXT_robustness2::nullDescriptor, but some Android/Mali drivers
++   * advertise that feature and crash when a null image view is written.
+    */
+   class DxvkUnboundResources {
+-    
++
+   public:
+-    
++
+     DxvkUnboundResources(DxvkDevice* dev);
+     ~DxvkUnboundResources();
+-    
+-    /**
+-     * \brief Dummy buffer handle
+-     * 
+-     * Returns a handle to a buffer filled
+-     * with zeroes. Use for unbound vertex
+-     * and index buffers.
+-     * \returns Dummy buffer handle
+-     */
++
++    /** Creates and initializes descriptor fallback resources. */
++    void initResources();
++
++    /** Zero-filled dummy buffer used for unbound buffers. */
+     VkBuffer bufferHandle();
+-    
+-    /**
+-     * \brief Dummy sampler descriptor
+-     * 
+-     * Points to a sampler which was created with
+-     * reasonable default values. Client APIs may
+-     * still require different behaviour.
+-     * \returns Dummy sampler descriptor
+-     */
++
++    /** Descriptor for the zero-filled dummy buffer. */
++    VkDescriptorBufferInfo bufferDescriptor();
++
++    /** R32_UINT view of the zero-filled dummy buffer. */
++    VkBufferView bufferViewDescriptor();
++
++    /** Default sampler used for unbound samplers. */
+     VkSampler samplerHandle();
+-    
++
++    /** Sampled/storage dummy image descriptor for a requested view type. */
++    VkDescriptorImageInfo imageViewDescriptor(VkImageViewType type, bool sampled);
++
++    /** Combined dummy image and sampler descriptor. */
++    VkDescriptorImageInfo imageSamplerDescriptor(VkImageViewType type);
++
+   private:
+-    
++
++    struct UnboundViews {
++      Rc<DxvkImageView> view1D;
++      Rc<DxvkImageView> view1DArr;
++      Rc<DxvkImageView> view2D;
++      Rc<DxvkImageView> view2DArr;
++      Rc<DxvkImageView> viewCube;
++      Rc<DxvkImageView> viewCubeArr;
++      Rc<DxvkImageView> view3D;
++    };
++
+     DxvkDevice*             m_device;
+ 
+     std::atomic<VkSampler>  m_samplerHandle = { VK_NULL_HANDLE };
+@@ -54,11 +66,27 @@ namespace dxvk {
+     dxvk::mutex             m_mutex;
+     Rc<DxvkSampler>         m_sampler;
+     Rc<DxvkBuffer>          m_buffer;
+-    
++    Rc<DxvkBufferView>      m_bufferView;
++
++    Rc<DxvkImage>           m_image1D;
++    Rc<DxvkImage>           m_image2D;
++    Rc<DxvkImage>           m_image3D;
++    UnboundViews            m_viewsSampled;
++    UnboundViews            m_viewsStorage;
++
+     Rc<DxvkSampler> createSampler();
+-    
+     Rc<DxvkBuffer> createBuffer();
+-    
++    Rc<DxvkBufferView> createBufferView(const Rc<DxvkBuffer>& buffer);
++    Rc<DxvkImage> createImage(VkImageType type, uint32_t layers);
++    Rc<DxvkImageView> createImageView(
++      const Rc<DxvkImage>& image,
++            VkFormat format,
++            VkImageViewType type,
++            uint32_t layers,
++            bool sampled);
++    UnboundViews createImageViews(VkFormat format, bool sampled);
++    DxvkImageView* getImageView(VkImageViewType type, bool sampled);
++
+   };
+-  
+-}
+\ No newline at end of file
++
++}
 diff --git a/src/wsi/sdl3/wsi_platform_sdl3.cpp b/src/wsi/sdl3/wsi_platform_sdl3.cpp
 index 9975cdac..55dbfbbb 100644
 --- a/src/wsi/sdl3/wsi_platform_sdl3.cpp
