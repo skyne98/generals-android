@@ -41,6 +41,7 @@
 #include <SDL3/SDL_main.h>
 #include <cerrno>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <string>
@@ -440,61 +441,28 @@ int main(int argc, char* argv[])
 	}
 #elif defined(__ANDROID__)
 	// GeneralsX-Android @build generals-android 11/07/2026 Android FS bootstrap.
-	// No funopen/stderr-swap (Android: stderr -> logcat via SDL's backend). Set the
-	// DXVK env vars and chdir to where GameData is sideloaded. Preference order:
-	//   1. $GENERALSX_DATA_PATH (env, if MainActivity ever sets it)
-	//   2. /sdcard/Android/data/com.generalsx.android/files  (adb push target; the
-	//      app's own external dir is readable without MANAGE_EXTERNAL_STORAGE)
-	//   3. $HOME (SDL3 may set this to the app's internal data dir)
-	//   4. current dir
-	setenv("DXVK_LOG_LEVEL", "none", 0);
-	// GeneralsX-Android @bugfix generals-android 11/07/2026 Capture stderr to a file.
-	// Android native apps' stderr -> /dev/null by default (logcat only captures it
-	// after SDL_Init redirects, but main() may exit before SDL_Init). freopen to a
-	// log in the internal files dir so we can adb pull / run-as cat the diagnostics.
-	//
-	// GameData lives in the app's INTERNAL files dir (/data/data/<pkg>/files). The
-	// external /sdcard path is blocked by scoped storage (Android 11+, targetSdk
-	// 35) even for the app's own package dir; the internal dir is always app-
-	// readable/writable. Sideload via: adb shell run-as <pkg> tar -xf /data/local/tmp/gamedata.tar -C files/
-	const char *dataDir = getenv("GENERALSX_DATA_PATH");
-	if (dataDir == nullptr || access(dataDir, R_OK) != 0) {
-		dataDir = "/data/data/com.generalsx.android/files";  // internal: always accessible
-	}
-	if (access(dataDir, R_OK) != 0) {
-		dataDir = getenv("HOME");
-	}
-	if (dataDir != nullptr) {
-		char logPath[1100];
-		snprintf(logPath, sizeof(logPath), "%s/generals-stderr.log", dataDir);
-		freopen(logPath, "w", stderr);
-		setvbuf(stderr, nullptr, _IOLBF, 0);
-	}
-	// Belt-and-suspenders: also try the app's INTERNAL files dir if the external
-	// freopen failed (scoped storage may block /sdcard writes). /data/data/<pkg>/files
-	// is always writable by the app; pull via `adb shell run-as <pkg> cat ...`.
+	// Extraction is deferred to after SDL_Init (SDL_IOFromFile needs SDL
+	// to access APK assets on Android). For now, just set up stderr.
+	const char *androidFilesDir = "/data/data/com.generalsx.android/files";
+	mkdir(androidFilesDir, 0755);
+
+	const char *internalLog = "/data/data/com.generalsx.android/files/generals-stderr.log";
 	{
-		const char *internalDir = "/data/data/com.generalsx.android/files";
-		mkdir(internalDir, 0755);  // create if missing (fopen can't create dirs)
-		const char *internalLog = "/data/data/com.generalsx.android/files/generals-stderr.log";
 		FILE *f = fopen(internalLog, "w");
 		if (f) {
 			fclose(f);
 			freopen(internalLog, "w", stderr);
 			setvbuf(stderr, nullptr, _IOLBF, 0);
-			fprintf(stderr, "INFO: stderr redirected to internal files dir (external was unwritable)\n");
 		}
 	}
-	// DXVK shader/state cache must be app-writable and persistent. Android native
-	// processes do not reliably define HOME; /data/local/tmp is shell-owned, so
-	// the previous fallback silently prevented cache creation and recompiled
-	// pipelines during every session.
+
+	// DXVK shader/state cache must be app-writable and persistent.
 	const char *cacheDir = "/data/data/com.generalsx.android/cache/dxvk";
 	mkdir("/data/data/com.generalsx.android/cache", 0755);
 	mkdir(cacheDir, 0755);
 	setenv("DXVK_STATE_CACHE_PATH", cacheDir, 1);
-	if (dataDir != nullptr && chdir(dataDir) == 0) {
-		fprintf(stderr, "INFO: Android working directory: %s\n", dataDir);
+	if (chdir(androidFilesDir) == 0) {
+		fprintf(stderr, "INFO: Android working directory: %s\n", androidFilesDir);
 	} else {
 		fprintf(stderr, "WARNING: Android chdir failed; using default CWD for GameData\n");
 	}
@@ -551,6 +519,121 @@ int main(int argc, char* argv[])
 
 		// Set DXVK WSI driver before loading Vulkan
 		setenv("DXVK_WSI_DRIVER", "SDL3", 1);
+
+#if defined(__ANDROID__)
+		// First-launch extraction: if gamedata tar parts are bundled in the APK's
+		// assets, extract them to the files directory. Skip if already extracted.
+		// Must be after SDL_Init (SDL_IOFromFile needs SDL to access APK assets).
+		const char *extractMarker = "/data/data/com.generalsx.android/files/.gamedata_extracted";
+		bool needExtract = (access(extractMarker, F_OK) != 0);
+		if (!needExtract) {
+			DIR *d = opendir("/data/data/com.generalsx.android/files");
+			if (d) {
+				int count = 0;
+				struct dirent *de;
+				while ((de = readdir(d)) != nullptr) {
+					if (de->d_name[0] == '.') continue;
+					if (++count > 2) break;
+				}
+				closedir(d);
+				if (count <= 2) needExtract = true;
+			}
+		}
+		if (needExtract) {
+			long long totalExtracted = 0;
+			bool foundAny = false;
+			for (int part = 1; ; part++) {
+				char tarName[32];
+				snprintf(tarName, sizeof(tarName), "gamedata%d.tar", part);
+				SDL_IOStream *tarIo = SDL_IOFromFile(tarName, "r");
+				if (!tarIo) break;
+				foundAny = true;
+				Sint64 tarSize = SDL_GetIOSize(tarIo);
+				fprintf(stderr, "INFO: Extracting %s (%lld bytes)...\n", tarName, (long long)tarSize);
+				fflush(stderr);
+				char header[512];
+				char longName[1024];
+				while (SDL_ReadIO(tarIo, header, 512) == 512) {
+					bool allZero = true;
+					for (int i = 0; i < 512; i++) { if (header[i] != 0) { allZero = false; break; } }
+					if (allZero) break;
+					char name[256];
+					strncpy(name, header, 255); name[255] = '\0';
+					if (header[156] == 'L') {
+						int nameSize = 0;
+						sscanf(header + 124, "%lo", &nameSize);
+						int nameBlocks = (nameSize + 511) / 512;
+						if (nameBlocks > 0 && nameBlocks < 4) {
+							SDL_ReadIO(tarIo, longName, nameBlocks * 512);
+							longName[nameSize] = '\0';
+							strncpy(name, longName, 255); name[255] = '\0';
+							SDL_ReadIO(tarIo, header, 512);
+						}
+					}
+					long fileSize = 0;
+					sscanf(header + 124, "%lo", &fileSize);
+					char typeFlag = header[156];
+					if (typeFlag == '5' || (typeFlag != '0' && typeFlag != '\0')) {
+						long blocks = (fileSize + 511) / 512;
+						for (long b = 0; b < blocks; b++) SDL_ReadIO(tarIo, header, 512);
+						continue;
+					}
+					char destPath[1200];
+					snprintf(destPath, sizeof(destPath), "/data/data/com.generalsx.android/files/%s", name);
+					char dirPath[1200];
+					strncpy(dirPath, destPath, sizeof(dirPath) - 1); dirPath[sizeof(dirPath) - 1] = '\0';
+					for (char *p = dirPath + strlen("/data/data/com.generalsx.android/files") + 1; *p; p++) {
+						if (*p == '/') { *p = '\0'; mkdir(dirPath, 0755); *p = '/'; }
+					}
+					FILE *out = fopen(destPath, "wb");
+					if (out) {
+						long remaining = fileSize;
+						while (remaining > 0) {
+							long toRead = remaining > (long)sizeof(header) ? (long)sizeof(header) : remaining;
+							size_t got = SDL_ReadIO(tarIo, header, toRead);
+							if (got == 0) break;
+							fwrite(header, 1, got, out);
+							remaining -= got;
+						}
+						fclose(out);
+						totalExtracted += fileSize;
+						long padded = (fileSize + 511) & ~511;
+						long consumed = fileSize;
+						while (consumed < padded) {
+							long toSkip = padded - consumed > 512 ? 512 : padded - consumed;
+							SDL_ReadIO(tarIo, header, toSkip);
+							consumed += toSkip;
+						}
+					} else {
+						long padded = (fileSize + 511) & ~511;
+						for (long b = 0; b < padded / 512; b++) SDL_ReadIO(tarIo, header, 512);
+					}
+				}
+				SDL_CloseIO(tarIo);
+				fprintf(stderr, "INFO: %s done (%.1f MB cumulative)\n", tarName, totalExtracted / 1048576.0);
+			}
+			if (foundAny) {
+				FILE *m = fopen(extractMarker, "w");
+				if (m) fclose(m);
+				fprintf(stderr, "INFO: All game data extracted (%.1f MB total)\n", totalExtracted / 1048576.0);
+			// Overwrite dxvk.conf with the Android-specific version from APK assets.
+			SDL_IOStream *dxvkConf = SDL_IOFromFile("dxvk.conf", "r");
+			if (dxvkConf) {
+				FILE *out = fopen("/data/data/com.generalsx.android/files/dxvk.conf", "wb");
+				if (out) {
+					char buf[4096];
+					size_t n;
+					while ((n = SDL_ReadIO(dxvkConf, buf, sizeof(buf))) > 0)
+						fwrite(buf, 1, n, out);
+					fclose(out);
+				}
+				SDL_CloseIO(dxvkConf);
+			}
+			} else {
+				fprintf(stderr, "INFO: No bundled game data found; expecting sideloaded data\n");
+			}
+		}
+#endif
 
 		// GeneralsX @bugfix BenderAI 06/03/2026 - Exclude LLVMpipe Vulkan ICD before loading Vulkan.
 		// libvulkan_lvp.so crashes during static initialization with LLVM 20.x when the Vulkan
